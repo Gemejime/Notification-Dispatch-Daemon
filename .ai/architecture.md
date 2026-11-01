@@ -85,13 +85,15 @@ Aligned with [Production Grade Backend Concepts.pdf](../tasks/Production%20Grade
 ### Layer 5: Observability & Quality
 19. **Observability (Secured Structured Logging, Metrics & Tracing)**:
     - **Secured Logging (`log/slog`)**: Machine-parseable JSON logs with correlation IDs (`trace_id`, `tenant_id`, `event_id`, `connection_id`, `node_id`). Strictly redacts bearer tokens, HMAC secrets, database passwords, and sensitive payload text.
-    - **Prometheus Metrics**:
-      - `notification_active_sse_connections` (Gauge, partitioned by `tenant_id`)
-      - `notification_events_processed_total` (Counter)
-      - `notification_client_write_latency_seconds` (Histogram, target $P99 \le 10\text{ms}$)
-      - `notification_dropped_frames_total` (Counter, slow consumer drops)
-      - `notification_webhook_enqueued_total` (Counter)
-      - `notification_cache_invalidations_total` (Counter)
+    - **Distributed Tracing (OpenTelemetry W3C `traceparent`)**: Extracts `trace_id` from incoming CDC outbox envelopes (`notification_event.proto`), propagates span context across targeted Redis node routing (`pod.{node_id}.events`) and outbound `WebhookDeliveryTask` messages (`webhook_task.proto`), and exports spans asynchronously to `rag-trace-collector-worker` without blocking the serving path.
+    - **Prometheus Metrics & Production Alert Thresholds**:
+      - `notification_active_sse_connections` (Gauge, partitioned by `tenant_id`, `node_id`; HPA scales at $\le 15,000$/pod)
+      - `notification_events_processed_total` (Counter; alert if CDC consumer lag $> 5,000$ records for $> 2\text{m}$)
+      - `notification_client_write_latency_seconds` (Histogram, target $P99 \le 10\text{ms}$; alert if $P99 > 50\text{ms}$ over $3\text{m}$)
+      - `notification_dropped_frames_total` (Counter, slow consumer drops; alert if $> 1\%$ of emitted frames across an active tenant)
+      - `notification_webhook_enqueued_total` (Counter; target hand-off $P99 \le 15\text{ms}$)
+      - `notification_cache_invalidations_total` (Counter; target propagation $\le 100\text{ms}$)
+      - **Near-OOM Saturation Alert**: Fires if container memory working set exceeds $1.8\text{GiB}$ for $> 1\text{m}$.
 20. **Health Checks & Graceful Connection Draining**:
     - `/healthz` and `/ready` probes govern load balancer traffic routing.
     - **Staggered Connection Draining on SIGTERM (ADR-005)**: On pod termination, the service marks `/ready` as `503`, stops accepting new connections, emits an SSE `retry:` directive header/frame with randomized jitter, and spreads socket disconnections across a 30–60 second `preStop` window (`terminationGracePeriodSeconds: 75`) to prevent thundering herd reconnection spikes.
