@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/application/command"
+	"github.com/gemejime/rag-notification-dispatch-daemon/internal/application/query"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/domain/entity"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/domain/router"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/cache/memory"
@@ -28,6 +29,10 @@ import (
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/observability"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/persistence/postgres"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/queue/kafka"
+	transporthttp "github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/transport/http"
+	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/transport/http/middleware"
+	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/transport/hub"
+	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/transport/sse"
 )
 
 const (
@@ -354,9 +359,42 @@ func main() {
 		}
 	}()
 
+	connectionHub := hub.NewConnectionHub(
+		cfg.NodeID,
+		cfg.SSESlowConsumerLimit,
+		cfg.DrainJitterMin,
+		cfg.DrainJitterMax,
+		metrics,
+		logger,
+	)
+	connectionHub.StartSlowConsumerSweeper(ctx, 1*time.Second)
+
+	registerCmd := command.NewRegisterConnectionHandler(connectionHub, nil, 45*time.Second)
+	terminateCmd := command.NewTerminateConnectionHandler(connectionHub, nil)
+
+	streamHandler := sse.NewStreamHandler(
+		sse.StreamHandlerConfig{
+			NodeID:              cfg.NodeID,
+			RingBufferSize:      cfg.SSERingBufferSize,
+			SlowConsumerTimeout: cfg.SSESlowConsumerLimit,
+			HeartbeatInterval:   cfg.SSEHeartbeatInterval,
+			DefaultRetryMs:      entity.DefaultSSERetryMs,
+		},
+		connectionHub,
+		registerCmd,
+		terminateCmd,
+		nil,
+		nil,
+		metrics,
+		logger,
+	)
+
+	sessionsHandler := query.NewListActiveSessionsHandler(connectionHub)
+	rateLimiter := middleware.NewReconnectRateLimiter(100, 200, 10000)
+
 	evaluator := router.NewRuleEvaluator()
 	filter := router.NewFilter(router.DefaultDedupWindowTTL, router.DefaultMaxDedupEntries)
-	cdcHandler := command.NewProcessCDCEventHandler(subCache, evaluator, filter, nil, nil, logger, metrics)
+	cdcHandler := command.NewProcessCDCEventHandler(subCache, evaluator, filter, connectionHub, nil, logger, metrics)
 
 	cdcStream := kafka.NewChannelRecordStream(cfg.SSERingBufferSize)
 	defer func() {
@@ -375,15 +413,25 @@ func main() {
 	}()
 
 	var draining atomic.Bool
-	deps := &ReadinessDependency{
-		RedisConnected: redisClient.IsConnected,
-		CDCConsuming:   cdcConsumer.IsConsuming,
-	}
-	mux := NewOperationalMuxWithDependencies(subCache, metrics, &draining, deps)
+
+	routerHandler := transporthttp.NewRouter(transporthttp.RouterConfig{
+		Cache:    subCache,
+		Metrics:  metrics,
+		Logger:   logger,
+		Draining: &draining,
+		ReadinessDeps: &transporthttp.ReadinessDependency{
+			RedisConnected: redisClient.IsConnected,
+			CDCConsuming:   cdcConsumer.IsConsuming,
+		},
+		StreamHandler:   streamHandler,
+		SessionsHandler: sessionsHandler,
+		InvalidationSub: invalidationSub,
+		RateLimiter:     rateLimiter,
+	})
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.HTTPPort,
-		Handler:           mux,
+		Handler:           routerHandler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -428,12 +476,22 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownBudget)
 	defer cancel()
 
-	// Step 1: Close listener first to stop accepting new connections while staggering active connection drain.
+	// Step 1: Assign independent randomized drain delay across active sockets (ADR-005).
+	drainDoneCh := connectionHub.DrainWithJitter(shutdownCtx, cfg.DrainJitterMin, cfg.DrainJitterMax)
+
+	// Step 2: Stop accepting new connections on listener.
 	listenerWaitCtx, listenerCancel := context.WithTimeout(shutdownCtx, drainDelay)
 	_ = srv.Shutdown(listenerWaitCtx)
 	listenerCancel()
 
-	// Step 2: Finish remaining staggered drain window within the 75-second budget.
+	// Step 3: Wait for all staggered connection drains to finish or context timeout.
+	select {
+	case <-drainDoneCh:
+		logger.Info("all active sse connections drained gracefully")
+	case <-shutdownCtx.Done():
+		logger.Warn("shutdown deadline reached during staggered sse drain")
+	}
+
 	_ = srv.Shutdown(shutdownCtx)
 }
 

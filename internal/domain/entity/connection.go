@@ -13,6 +13,15 @@ const (
 	SlowConsumerEvictionTimeout = 5 * time.Second
 )
 
+// ContextKey represents typed keys for storing session identifiers in request contexts.
+type ContextKey string
+
+const (
+	ContextKeyTenantID ContextKey = "tenant_id"
+	ContextKeyUserID   ContextKey = "user_id"
+	ContextKeyTraceID  ContextKey = "trace_id"
+)
+
 // Connection represents an active unidirectional SSE client session aggregate.
 type Connection struct {
 	ConnectionID   string
@@ -47,11 +56,13 @@ func (c Connection) Validate() error {
 }
 
 // AcceptsEvent reports whether the connection's tenant, user, and optional severity filter match the event.
+// User-targeted notifications (event.UserID != "") are strictly delivered to matching user connections
+// and never leak to connections with mismatched or empty UserID.
 func (c Connection) AcceptsEvent(event NotificationEvent) bool {
 	if c.TenantID != event.TenantID {
 		return false
 	}
-	if event.UserID != "" && c.UserID != "" && event.UserID != c.UserID {
+	if event.UserID != "" && c.UserID != event.UserID {
 		return false
 	}
 	if c.SeverityFilter != "" && event.Severity.Rank() < c.SeverityFilter.Rank() {
