@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package rag.notification.v1;
+
+option go_package = "github.com/gemejime/rag-notification-dispatch-daemon/api/proto/v1;notificationv1";
+
+enum Severity {
+  SEVERITY_UNSPECIFIED = 0;
+  SEVERITY_INFO = 1;
+  SEVERITY_WARNING = 2;
+  SEVERITY_ERROR = 3;
+  SEVERITY_CRITICAL = 4;
+}
+
+message NotificationEventEnvelope {
+  string event_id = 1;           // ULID watermark (maps to SSE id: field)
+  string tenant_id = 2;          // Mandatory tenant isolation key
+  string user_id = 3;            // Optional targeted user recipient
+  string source_service = 4;     // e.g. "rag-ingestion-coordinator"
+  string event_type = 5;         // e.g. "ingestion.milestone", "evaluation.quality_alert"
+  Severity severity = 6;
+  bool is_terminal = 7;          // True for terminal state transitions (retained on buffer saturation)
+  int64 occurred_at_unix_ms = 8;
+  string trace_id = 9;           // OpenTelemetry W3C trace correlation ID
+  bytes payload_json = 10;       // Pre-validated JSON object bytes for zero-conversion SSE write path
+}
+

@@ -1,0 +1,331 @@
+openapi: 3.1.0
+info:
+  title: RAG Notification Dispatch Daemon API
+  description: >-
+    High-density Server-Sent Events (SSE) streaming, targeted Redis pod routing,
+    in-memory subscription rule evaluation, and asynchronous webhook task enqueueing
+    microservice (rag-notification-dispatch-daemon).
+  version: 1.0.0
+servers:
+  - url: http://localhost:8080
+    description: Local / Internal Pod HTTP & SSE Server
+security:
+  - bearerAuth: []
+paths:
+  /v1/notifications/stream:
+    get:
+      summary: Establish Persistent Server-Sent Events (SSE) Notification Stream
+      operationId: streamNotifications
+      tags:
+        - SSE Streaming
+      parameters:
+        - name: Last-Event-ID
+          in: header
+          required: false
+          description: >-
+            Standard SSE watermark event ID for rate-limited reconnect backfill from Redis replay buffer.
+          schema:
+            type: string
+            example: "01J9Z8K4M2N6P8Q0R2S4T6V8W0"
+        - name: severity_filter
+          in: query
+          required: false
+          description: Optional minimum severity filter (INFO, WARNING, ERROR, CRITICAL).
+          schema:
+            type: string
+            enum: [INFO, WARNING, ERROR, CRITICAL]
+      responses:
+        "200":
+          description: >-
+            Persistent SSE stream opened. Emits immediate `: ping\n\n` every 15s and JSON-formatted
+            domain notification frames. Sets `X-Accel-Buffering: no`.
+          headers:
+            Content-Type:
+              schema:
+                type: string
+                example: "text/event-stream; charset=utf-8"
+            Cache-Control:
+              schema:
+                type: string
+                example: "no-cache, no-transform"
+            Connection:
+              schema:
+                type: string
+                example: "keep-alive"
+            X-Accel-Buffering:
+              schema:
+                type: string
+                example: "no"
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                example: |
+                  : ping
+
+                  id: 01J9Z8K4M2N6P8Q0R2S4T6V8W0
+                  event: ingestion.milestone
+                  retry: 5000
+                  data: {"event_id":"01J9Z8K4M2N6P8Q0R2S4T6V8W0","tenant_id":"tnt_01H","event_type":"ingestion.milestone","severity":"INFO","is_terminal":false,"occurred_at":"2026-11-01T08:00:00Z","payload":{"document_id":"doc_99","stage":"CHUNK_COMPILATION","progress_pct":75}}
+        "401":
+          description: Missing or invalid channel authorization bearer token
+        "429":
+          description: Reconnect or backfill rate limit exceeded
+        "503":
+          description: Pod is draining connections (SIGTERM active); client should reconnect with jitter
+  /v1/notifications/sessions:
+    get:
+      summary: List Active SSE Sessions and Node Presence Telemetry
+      operationId: listActiveSessions
+      tags:
+        - Administration & Presence
+      parameters:
+        - name: tenant_id
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Paginated active session telemetry for the tenant
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActiveSessionsResponse"
+        "401":
+          description: Unauthorized
+        "403":
+          description: Cross-tenant access forbidden
+  /v1/notifications/subscriptions/invalidate:
+    post:
+      summary: Invalidate Pod-Local In-Memory Tenant Subscription Cache
+      operationId: invalidateTenantCache
+      tags:
+        - Administration & Cache
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CacheInvalidationRequest"
+      responses:
+        "202":
+          description: Cache invalidation accepted and broadcast on tenant.config.updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CacheInvalidationResponse"
+  /healthz:
+    get:
+      summary: Liveness Probe
+      operationId: getLiveness
+      tags:
+        - Probes & Observability
+      security: []
+      responses:
+        "200":
+          description: Go runtime and HTTP listener are alive
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    example: "healthy"
+  /ready:
+    get:
+      summary: Readiness Probe
+      operationId: getReadiness
+      tags:
+        - Probes & Observability
+      security: []
+      responses:
+        "200":
+          description: Pod-local cache warmed, Redis cluster connected, CDC consumer active, not draining
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, subscription_cache, redis_backplane, cdc_consumer, draining]
+                properties:
+                  status:
+                    type: string
+                    example: "ready"
+                  subscription_cache:
+                    type: string
+                    example: "warmed"
+                  redis_backplane:
+                    type: string
+                    example: "connected"
+                  cdc_consumer:
+                    type: string
+                    example: "consuming"
+                  draining:
+                    type: boolean
+                    example: false
+        "503":
+          description: Pod is initializing, dependency unreachable, or SIGTERM graceful draining in progress
+  /metrics:
+    get:
+      summary: Prometheus Metrics Scrape Endpoint
+      operationId: getMetrics
+      tags:
+        - Probes & Observability
+      security: []
+      responses:
+        "200":
+          description: Prometheus text exposition format
+          content:
+            text/plain:
+              schema:
+                type: string
+  /docs:
+    get:
+      summary: Interactive Swagger UI Documentation
+      operationId: getSwaggerDocs
+      tags:
+        - Documentation
+      security: []
+      responses:
+        "200":
+          description: HTML Swagger UI
+  /redoc:
+    get:
+      summary: Interactive ReDoc UI Documentation
+      operationId: getRedocDocs
+      tags:
+        - Documentation
+      security: []
+      responses:
+        "200":
+          description: HTML ReDoc UI
+  /api/docs:
+    get:
+      summary: Machine-Readable OpenAPI 3.1 JSON Specification
+      operationId: getOpenApiDocs
+      tags:
+        - Documentation
+      security: []
+      responses:
+        "200":
+          description: OpenAPI 3.1 JSON schema
+  /openapi.json:
+    get:
+      summary: Standard Machine-Readable OpenAPI 3.1 JSON Specification
+      operationId: getOpenApiJson
+      tags:
+        - Documentation
+      security: []
+      responses:
+        "200":
+          description: OpenAPI 3.1 JSON schema
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    SSENotificationFrame:
+      type: object
+      required:
+        - event_id
+        - tenant_id
+        - event_type
+        - severity
+        - is_terminal
+        - occurred_at
+        - payload
+      properties:
+        event_id:
+          type: string
+          description: Monotonic ULID/UUID watermark used for Last-Event-ID replay
+        tenant_id:
+          type: string
+        user_id:
+          type: string
+        event_type:
+          type: string
+          enum:
+            - ingestion.milestone
+            - index.blue_green_switched
+            - chunk.overlay_conflict
+            - evaluation.quality_alert
+        severity:
+          type: string
+          enum: [INFO, WARNING, ERROR, CRITICAL]
+        is_terminal:
+          type: boolean
+          description: >-
+            If true (e.g. COMPLETED/FAILED), ring buffer retains this frame by evicting an unread non-terminal frame during slow-consumer saturation; if all 256 buffered frames are already terminal, the connection is evicted immediately and relies on Last-Event-ID recovery to preserve the 256-event bound and non-blocking writes.
+        occurred_at:
+          type: string
+          format: date-time
+        payload:
+          type: object
+          additionalProperties: true
+    ActiveSessionsResponse:
+      type: object
+      required: [tenant_id, active_connections, sessions]
+      properties:
+        tenant_id:
+          type: string
+        active_connections:
+          type: integer
+        next_cursor:
+          type: string
+        sessions:
+          type: array
+          items:
+            type: object
+            required: [connection_id, user_id, node_id, connected_at, buffered_events]
+            properties:
+              connection_id:
+                type: string
+              user_id:
+                type: string
+              node_id:
+                type: string
+              connected_at:
+                type: string
+                format: date-time
+              buffered_events:
+                type: integer
+                maximum: 256
+    CacheInvalidationRequest:
+      type: object
+      required: [tenant_id, reason]
+      properties:
+        tenant_id:
+          type: string
+        reason:
+          type: string
+          example: "subscription_rule_updated"
+    CacheInvalidationResponse:
+      type: object
+      required: [status, tenant_id, invalidated_at]
+      properties:
+        status:
+          type: string
+          example: "invalidated"
+        tenant_id:
+          type: string
+        invalidated_at:
+          type: string
+          format: date-time
+

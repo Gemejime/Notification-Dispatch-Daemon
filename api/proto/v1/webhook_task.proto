@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package rag.notification.v1;
+
+option go_package = "github.com/gemejime/rag-notification-dispatch-daemon/api/proto/v1;notificationv1";
+
+message WebhookDeliveryTask {
+  string task_id = 1;            // Deterministic idempotency key: sha256(tenant_id + event_id + target_id)
+  string event_id = 2;           // Originating CDC outbox event_id
+  string tenant_id = 3;          // Tenant isolation boundary
+  string target_id = 4;          // Configured webhook target UUID
+  string target_url = 5;         // Customer destination URL (validated/called by rag-webhook-delivery-worker)
+  string secret_ref = 6;         // KMS/Vault reference for HMAC-SHA256 signing key (never raw secret in logs)
+  string signature_header_name = 7; // Target HTTP signature header name (default: "X-RAG-Signature-256")
+  int64 timestamp_unix_sec = 8;  // Task creation epoch timestamp for replay protection
+  string event_type = 9;         // Domain event type (e.g. "ingestion.milestone")
+  bytes payload_json = 10;       // Pre-serialized JSON payload bytes
+  string trace_id = 11;          // OpenTelemetry W3C traceparent correlation ID
+}
+
