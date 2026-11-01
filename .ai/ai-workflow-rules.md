@@ -3,6 +3,7 @@
 ## Development Approach
 
 Build **`rag-notification-dispatch-daemon`** incrementally following a strict spec-driven workflow:
+
 - The specification documents in `tasks/` (specifically `RAG Notification Dispatch Daemon Service Implementation Plan.pdf` and `Production Grade Backend Concepts.pdf`) and context files in [`.ai/`](.) define all system invariants, hexagonal package boundaries, SLIs/SLOs, and operational guardrails.
 - Adhere strictly to the hexagonal Go 1.23+ architecture (`internal/domain`, `internal/application`, `internal/infrastructure`, `cmd/notification-daemon`) and architectural decision records (ADR-001 through ADR-005) documented in [`.ai/architecture.md`](architecture.md).
 
@@ -10,7 +11,7 @@ Build **`rag-notification-dispatch-daemon`** incrementally following a strict sp
 
 ## Human-in-the-Loop Rules
 
-- **Plan First**: Propose a clear implementation plan before making major architectural changes, and ask for clarification if requirements are ambiguous.
+- **Plan First**: Propose a clear implementation plan in `prompts/<task-name>.md` before making major architectural changes, and ask for clarification if requirements are ambiguous.
 - **Destructive Action Guards**: Always request human confirmation before executing destructive operations, dropping tables/streams, or altering git history.
 - **Demonstrate & Verify**: Provide clear verification steps, unit/race test output, and OpenAPI sync confirmation after completing each work unit.
 
@@ -30,7 +31,7 @@ Build **`rag-notification-dispatch-daemon`** incrementally following a strict sp
 10. **Git Commit Standards**:
     - **Git Commit Frequency**: Commit code as you build. Every working session or phase must contain **at least two git commits**.
     - **Conventional Commit Patterns**: All git commit messages must strictly adhere to the following prefixes:
-      - `feat:` for new features 
+      - `feat:` for new features
       - `fix:` for bug fixes
       - `refactor:` for code refactoring
       - `docs:` for documentation updates
