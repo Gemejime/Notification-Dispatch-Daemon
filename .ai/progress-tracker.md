@@ -4,11 +4,12 @@
 
 - **Phase 1: Ingestion Pipeline & Contracts** (🟢 Completed)
 - **Phase 2: High-Density SSE Engine** (🟢 Completed)
-- **Next Up — Phase 3: Targeted Routing & Egress Enqueueing** (⏳ Ready to start)
+- **Phase 3: Targeted Routing & Egress Enqueueing** (🟢 Completed)
+- **Next Up — Phase 4: Resilience, Chaos & Production Rollout** (⏳ Ready to start)
 
 ## Current Goal
 
-- Complete Phase 2 (bounded 256-event non-blocking ring buffer with slow-consumer drops and terminal frame retention, local node ConnectionHub with user isolation and slow consumer sweep, edge proxy bypass flusher with 15s heartbeats and Slow-Loris write deadline protection, multiplexed SSE stream handler, active session cursor pagination, HTTP security middleware, and ADR-005 per-connection staggered SIGTERM draining) and prepare for Phase 3 (Redis targeted routing `pod.{node_id}.events`, `PresenceRegistry`, and HMAC-SHA256 webhook task enqueueing).
+- Complete Phase 3 (Redis 7.2 presence directory `rag:notify:presence:{tenant_id}:{user_id}` and tenant node index with 45s TTL and immediate last-socket pruning, targeted pod router `pod.{node_id}.events` carrying pre-serialized `sse_frame` envelopes without $O(N \times M)$ fan-out, asynchronous HMAC-SHA256 metadata webhook task enqueueing with $P99 \le 15\text{ms}$ budget, bounded Redis Stream replay buffer `rag:notify:replay:{tenant_id}` with cold-journal fallback, and token-bucket reconnect rate limiting returning HTTP 429) and prepare for Phase 4 (100,000 socket cluster soak testing, SIGTERM chaos verification, Helm charts, and distroless containerization).
 
 ---
 
@@ -18,12 +19,33 @@
 | :--- | :--- | :--- | :--- | :--- |
 | **Phase 1: Ingestion Pipeline & Contracts** | Weeks 1–2 | Event Consumption & Schemas | • Repository governance: `.gitignore` (excluding `tasks/`), `.github/workflows/ci.yml` (`lint-and-typecheck`, `security-and-logging-audit`, `openapi-and-doc-api-sync`, `test-suites`), `.ai/`, `.ai.md`, and `GEMINI.MD`.<br>• Protobuf v3 contracts (`api/proto/v1/notification_event.proto`, `webhook_task.proto`, `contracts.pb.go`) for internal Kafka outbox events and webhook delivery tasks; clean JSON formatting pipeline for SSE client writes.<br>• Kafka consumer group setup (`internal/infrastructure/queue/kafka/cdc_consumer.go`) with offset tracking.<br>• In-memory local tenant subscription cache (`internal/infrastructure/cache/memory/subscription_cache.go`) with asynchronous `tenant.config.updated` invalidation listeners (`<= 100ms`). | 🟢 Completed |
 | **Phase 2: High-Density SSE Engine** | Weeks 3–4 | Streaming Infrastructure | • Non-blocking SSE stream handler (`internal/infrastructure/transport/sse/stream_handler.go`) with bounded per-client channels (buffer size: 256 events in `ring_buffer.go`).<br>• Edge proxy compatibility: immediate `http.Flusher` comment frames (`: ping\n\n`) every 15s (`flusher.go`), `X-Accel-Buffering: no` enforcement, and Slow-Loris write deadline protection.<br>• Slow consumer drop policies dropping non-terminal progress frames at capacity (256) while retaining terminal transitions, and evicting connections stalled for `> 5s` (`connection_hub.go`).<br>• ADR-005 per-connection staggered graceful draining with randomized jitter [30s, 60s] and `retry: <ms>\n\n` directive frame emission. | 🟢 Completed |
-| **Phase 3: Targeted Routing & Egress Enqueueing** | Weeks 5–6 | Targeted Node Routing & Queues | • Targeted pod routing channels on Redis (`pod.{node_id}.events` via `targeted_router.go` and `presence_registry.go`) replacing broadcast Pub/Sub (ADR-003).<br>• Webhook routing evaluator (`rule_evaluator.go`, `dispatch_webhook_task.go`) and HMAC-SHA256 task enqueueing to Redis Streams / RabbitMQ (`P99 <= 15ms`).<br>• Bounded `Last-Event-ID` replay buffer in Redis (`fetch_replay_events.go`) with rate-limited backfill queries. | ⏳ Planned |
+| **Phase 3: Targeted Routing & Egress Enqueueing** | Weeks 5–6 | Targeted Node Routing & Queues | • Targeted pod routing channels on Redis (`pod.{node_id}.events` via `targeted_router.go` and `presence_registry.go`) replacing broadcast Pub/Sub (ADR-003).<br>• Webhook routing evaluator (`rule_evaluator.go`, `dispatch_webhook_task.go`) and HMAC-SHA256 task enqueueing to Redis Streams / RabbitMQ (`P99 <= 15ms`, ADR-001).<br>• Bounded `Last-Event-ID` replay buffer in Redis (`fetch_replay_events.go`) with token-bucket rate-limited backfill queries and cold-journal fallback (`event_journal_repo.go`). | 🟢 Completed |
 | **Phase 4: Resilience, Chaos & Production Rollout** | Weeks 7–8 | Load Tuning & Rollout | • Soak testing with 100,000 concurrent persistent connections across 5 pods (`~20,000` per pod, RSS `<= 1.6GiB`) under continuous broadcast bursts.<br>• Chaos testing verifying graceful draining on `SIGTERM` with client reconnection jitter spread across 30–60s (`terminationGracePeriodSeconds: 75`) without thundering herd spikes or Redis CPU `> 60%`.<br>• Production Helm cutover (`deployments/helm/`) and multi-stage distroless Dockerfile (`gcr.io/distroless/static:nonroot`, `GOMEMLIMIT=1800MiB`, `GOGC=80`). | ⏳ Planned |
 
 ---
 
 ## Completed Units
+
+- **Phase 3 Implementation — Targeted Routing & Egress Enqueueing**:
+  - **Redis 7.2 Presence Directory & Bounded Replay Store (`internal/infrastructure/cache/redis/presence_registry.go`)**:
+    - Implemented `command.PresenceRegistrar` (`RegisterPresence`, `DeregisterPresence`, `RefreshPresence`).
+    - Hot-path targeted node queries: `rag:notify:presence:{tenant_id}:{user_id}` and `rag:notify:tenant_nodes:{tenant_id}` resolved in $\le 5\text{ms}$.
+    - 45s heartbeat refresh on 15s SSE keepalive pings; immediate node pruning from `tenant_nodes` on last local socket disconnect to prevent stale ghost routing.
+    - Bounded Redis Stream replay buffer (`rag:notify:replay:{tenant_id}`, `MAXLEN ~ 1000`, `TTL = 3600s`).
+    - High-performance thread-safe multi-node Redis cluster simulator (`InMemoryRedisClusterClient`) for deterministic multi-instance tests.
+  - **Targeted Pod Routing Engine (`internal/infrastructure/transport/hub/targeted_router.go`)**:
+    - Implemented `command.NodeEventDispatcher` (`ADR-003`): delivers directly to local `ConnectionHub` when `node_id == localNodeID` (zero network hop, zero re-serialization), and publishes pre-formatted `sse_frame` wire envelopes (`PodRoutedEnvelope`) with OpenTelemetry W3C `trace_id` directly to `pod.{node_id}.events`.
+    - Background subscriber on `pod.{local_node_id}.events` receiving peer-routed envelopes and pushing pre-formatted frames directly into matching client ring buffers.
+  - **Asynchronous Webhook Task Enqueueing (`internal/application/command/dispatch_webhook_task.go` & `internal/infrastructure/queue/publisher/task_queue_publisher.go`)**:
+    - Built deterministic task generator (`task_id = sha256(tenant_id + ":" + event_id + ":" + target_id)`) with `secret_ref` and `payload_json` Secured Logging redaction (`ADR-001`).
+    - Hand-off latency within $P99 \le 15\text{ms}$ budget; Protobuf v3 binary wire format serialization (`MarshalWire()`).
+    - Centralized `notification_webhook_enqueued_total{tenant_id, status}` metric accounting with exactly-once increment per task attempt.
+  - **Bounded `Last-Event-ID` Replay Buffer & Rate-Limited Backfill (`internal/application/query/fetch_replay_events.go`)**:
+    - Query missed tenant events strictly after client's watermark from `rag:notify:replay:{tenant_id}` with cold-path `EventJournalRepository` fallback (`event_journal_repo.go`).
+    - Per-tenant token-bucket backfill rate limiting returning `ErrBackfillRateLimited` -> HTTP `429 Too Many Requests` with `Retry-After: 5` to protect Redis CPU ($< 60\%$) during rolling restarts (`Runbook 2`).
+  - **Full Unit & End-to-End Integration Test Suites (`test/unit/`, `test/integration/`)**:
+    - `test/unit/phase3_routing_and_webhook_test.go`: verified multi-pod targeted routing (`Pod A` vs `Pod B`), TTL refresh and immediate last-socket pruning, deterministic webhook task enqueueing, and rate-limited replay backfill.
+    - `test/integration/dispatch_pipeline_integration_test.go`: end-to-end verification of CDC ingestion -> 0 SQL hot path -> targeted pod routing (`pod.pod-b.events`) -> SSE client stream delivery + `Last-Event-ID` replay + $\le 100\text{ms}$ cache invalidation coherence.
 
 - **Phase 2 Implementation — High-Density SSE Engine**:
   - **Bounded Per-Client Ring Buffer (`internal/infrastructure/transport/hub/ring_buffer.go`)**:
