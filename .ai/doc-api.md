@@ -367,6 +367,8 @@ components:
 
 ## 3. Protobuf v3 Contracts (`api/proto/v1/`)
 
+The Protobuf v3 contracts (`notification_event.proto` and `webhook_task.proto`) are bound in Go via [`api/proto/v1/contracts.pb.go`](../api/proto/v1/contracts.pb.go), which provides deterministic Protobuf binary wire marshaling (`MarshalWire()` / `UnmarshalWire()`), transparent JSON wire fallback, strict schema validation (`Validate()`), and Secured Logging `slog.LogValuer` redaction of `payload_json` and `secret_ref`.
+
 ### A. CDC Outbox Event Envelope (`api/proto/v1/notification_event.proto`)
 Consumed from Kafka 3.7+ / Redis 7.2 Streams outbox topics produced by `rag-kb-catalog-service`, `rag-ingestion-coordinator`, and `rag-chunk-lifecycle-service`:
 
@@ -435,7 +437,7 @@ message WebhookDeliveryTask {
 2. **Targeted Pod Routing Channel (`internal/infrastructure/transport/hub/targeted_router.go`)**:
    - Pub/Sub Channel: `pod.{node_id}.events` (ADR-003: prevents $O(N \times M)$ cluster-wide broadcast fan-out).
 3. **Cache Invalidation Channel (`internal/infrastructure/cache/redis/invalidation_sub.go`)**:
-   - Pub/Sub Channel: `tenant.config.updated` carrying JSON `{"tenant_id": "...", "updated_at_unix_ms": 1762000000000}`. All pods evict/reload local memory cache within $\le 100\text{ms}$.
+   - Pub/Sub Channel: `tenant.config.updated` carrying JSON `{"tenant_id": "...", "reason": "subscription_rule_updated", "updated_at_unix_ms": 1762000000000}`. All pods perform asynchronous Reload-on-Invalidation from the cold-path PostgreSQL repositories (`DefaultInvalidationReloadTimeout = 80ms`) and atomically swap the tenant's local memory cache entry within $\le 100\text{ms}$.
 4. **Bounded `Last-Event-ID` Replay Buffer (`internal/application/query/fetch_replay_events.go`)**:
    - Key: `rag:notify:replay:{tenant_id}` (Redis Stream `MAXLEN ~ 1000` with `TTL = 3600s`), queried with rate-limited `XRANGE` on client reconnect.
 

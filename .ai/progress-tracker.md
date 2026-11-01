@@ -2,12 +2,12 @@
 
 ## Current Phase
 
-- **Phase 1: Governance, CI/CD, OpenAPI 3.1 Doc API & Context Alignment** (🟢 Completed)
-- **Next Up — Phase 1 Implementation: Ingestion Pipeline & Contracts** (⏳ Ready to start)
+- **Phase 1: Ingestion Pipeline & Contracts** (🟢 Completed)
+- **Next Up — Phase 2: High-Density SSE Engine** (⏳ Ready to start)
 
 ## Current Goal
 
-- Establish repository governance (`.gitignore`, GitHub Actions CI pipeline), align all `.ai/` context files and `.ai.md` with `RAG Notification Dispatch Daemon Service Implementation Plan.pdf` and `Production Grade Backend Concepts.pdf`, create `GEMINI.MD`, and enforce Secured Logging, continuous OpenAPI 3.1 Doc API updates, and Git Commit Standards.
+- Complete Phase 1 (Protobuf v3 & OpenAPI 3.1 contracts, zero-intermediary SSE JSON byte formatting pipeline, pure hexagonal domain layer, pod-local in-memory subscription cache with `<= 100ms` reload-on-invalidation, cold-path PostgreSQL repositories, Kafka CDC consumer group with offset tracking & poison-pill isolation, and Secured Logging + Prometheus telemetry) and prepare for Phase 2 (`stream_handler.go`, `flusher.go`, `ring_buffer.go`, `connection_hub.go`).
 
 ---
 
@@ -15,7 +15,7 @@
 
 | Phase | Duration | Core Domain Focus | Deliverables & Milestone Exit Criteria | Status |
 | :--- | :--- | :--- | :--- | :--- |
-| **Phase 1: Ingestion Pipeline & Contracts** | Weeks 1–2 | Event Consumption & Schemas | • Repository governance: `.gitignore` (excluding `tasks/`), `.github/workflows/ci.yml` (`lint-and-typecheck`, `security-and-logging-audit`, `openapi-and-doc-api-sync`, `test-suites`), `.ai/`, `.ai.md`, and `GEMINI.MD`.<br>• Protobuf v3 contracts (`api/proto/v1/notification_event.proto`, `webhook_task.proto`) for internal Kafka outbox events and webhook delivery tasks; clean JSON formatting pipeline for SSE client writes.<br>• Kafka consumer group setup (`internal/infrastructure/queue/kafka/cdc_consumer.go`) with offset tracking.<br>• In-memory local tenant subscription cache (`internal/infrastructure/cache/memory/subscription_cache.go`) with asynchronous `tenant.config.updated` invalidation listeners (`<= 100ms`). | 🟡 In Progress (Governance & CI Completed) |
+| **Phase 1: Ingestion Pipeline & Contracts** | Weeks 1–2 | Event Consumption & Schemas | • Repository governance: `.gitignore` (excluding `tasks/`), `.github/workflows/ci.yml` (`lint-and-typecheck`, `security-and-logging-audit`, `openapi-and-doc-api-sync`, `test-suites`), `.ai/`, `.ai.md`, and `GEMINI.MD`.<br>• Protobuf v3 contracts (`api/proto/v1/notification_event.proto`, `webhook_task.proto`, `contracts.pb.go`) for internal Kafka outbox events and webhook delivery tasks; clean JSON formatting pipeline for SSE client writes.<br>• Kafka consumer group setup (`internal/infrastructure/queue/kafka/cdc_consumer.go`) with offset tracking.<br>• In-memory local tenant subscription cache (`internal/infrastructure/cache/memory/subscription_cache.go`) with asynchronous `tenant.config.updated` invalidation listeners (`<= 100ms`). | 🟢 Completed |
 | **Phase 2: High-Density SSE Engine** | Weeks 3–4 | Streaming Infrastructure | • Non-blocking SSE stream handler (`internal/infrastructure/transport/sse/stream_handler.go`) using epoll/netpoll or bounded per-client channels (buffer size: 256 events in `ring_buffer.go`).<br>• Edge proxy compatibility: immediate `http.Flusher` comment frames (`: ping\n\n`) every 15s (`flusher.go`) and `X-Accel-Buffering: no` enforcement.<br>• Slow consumer drop policies dropping non-terminal progress frames at capacity (256) while retaining terminal transitions, and evicting connections stalled for `> 5s`. | ⏳ Planned |
 | **Phase 3: Targeted Routing & Egress Enqueueing** | Weeks 5–6 | Targeted Node Routing & Queues | • Targeted pod routing channels on Redis (`pod.{node_id}.events` via `targeted_router.go` and `presence_registry.go`) replacing broadcast Pub/Sub (ADR-003).<br>• Webhook routing evaluator (`rule_evaluator.go`, `dispatch_webhook_task.go`) and HMAC-SHA256 task enqueueing to Redis Streams / RabbitMQ (`P99 <= 15ms`).<br>• Bounded `Last-Event-ID` replay buffer in Redis (`fetch_replay_events.go`) with rate-limited backfill queries. | ⏳ Planned |
 | **Phase 4: Resilience, Chaos & Production Rollout** | Weeks 7–8 | Load Tuning & Rollout | • Soak testing with 100,000 concurrent persistent connections across 5 pods (`~20,000` per pod, RSS `<= 1.6GiB`) under continuous broadcast bursts.<br>• Chaos testing verifying graceful draining on `SIGTERM` with client reconnection jitter spread across 30–60s (`terminationGracePeriodSeconds: 75`) without thundering herd spikes or Redis CPU `> 60%`.<br>• Production Helm cutover (`deployments/helm/`) and multi-stage distroless Dockerfile (`gcr.io/distroless/static:nonroot`, `GOMEMLIMIT=1800MiB`, `GOGC=80`). | ⏳ Planned |
@@ -24,6 +24,17 @@
 
 ## Completed Units
 
+- **Phase 1 Implementation — Ingestion Pipeline & Contracts**:
+  - **Protobuf v3 & OpenAPI 3.1 Contracts (`api/`)**:
+    - Created `api/proto/v1/notification_event.proto`, `api/proto/v1/webhook_task.proto`, and `api/proto/v1/contracts.pb.go` with binary/JSON wire marshalers, schema validation, and `slog.LogValuer` redaction.
+    - Materialized `api/openapi/openapi.yaml` synchronized 1:1 with `.ai/doc-api.md`.
+  - **Hexagonal Domain Layer (`internal/domain/`)**:
+    - Implemented `entity/notification.go` (with zero-intermediary `FormatSSEFrame` & `FormatSSEDataJSON`), `entity/subscription.go`, `entity/webhook_target.go` (with deterministic SHA-256 `task_id`), `entity/connection.go`, `router/rule_evaluator.go`, `router/filter.go` (bounded TTL deduplication & token-bucket burst limiter), and repository ports (`subscription_repo.go`, `webhook_target_repo.go`, `event_journal_repo.go`).
+  - **Pod-Local Subscription Cache, Reload-on-Invalidation & Cold-Path PostgreSQL (`internal/infrastructure/`)**:
+    - Implemented `cache/memory/subscription_cache.go` guaranteeing 0 SQL reads on the hot CDC ingestion path (ADR-004).
+    - Implemented `cache/redis/invalidation_sub.go` listening on `tenant.config.updated` with `<= 100ms` reload-on-invalidation from cold-path PostgreSQL (`persistence/postgres/pool.go`, `subscription_repo.go`, `webhook_repo.go`).
+  - **CDC Consumer Group, Command Orchestrator & Observability**:
+    - Implemented `application/command/process_cdc_event.go`, `queue/kafka/cdc_consumer.go` (offset watermark tracking & poison-pill isolation), `observability/logging.go` (Secured Logging `ReplaceAttr` redaction & 6 canonical Prometheus metrics), `cmd/notification-daemon/main.go`, and `test/unit/phase1_ingestion_test.go`.
 - **Repository Governance & CI/CD Foundation**:
   - **Git Ignore Configuration (`.gitignore`)**:
     - Excluded `tasks/` specification directory, Go binaries/build artifacts, test profiles, `.env` secrets, and private keys.

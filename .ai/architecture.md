@@ -110,7 +110,8 @@ rag-notification-dispatch-daemon/
 ├── api/
 │   ├── proto/v1/
 │   │   ├── notification_event.proto     # CDC outbox event envelope definitions
-│   │   └── webhook_task.proto           # Downstream delivery task contracts
+│   │   ├── webhook_task.proto           # Downstream delivery task contracts
+│   │   └── contracts.pb.go              # Deterministic Protobuf/JSON wire bindings & validators
 │   └── openapi/
 │       └── openapi.yaml                 # Public push subscription & probe OpenAPI 3.1 spec
 ├── internal/
@@ -137,6 +138,8 @@ rag-notification-dispatch-daemon/
 │   │       ├── list_active_sessions.go  # Presence and connection telemetry
 │   │       └── fetch_replay_events.go   # Rate-limited reconnect backfill handler
 │   └── infrastructure/                  # Adapters and external drivers
+│       ├── observability/
+│       │   └── logging.go               # Secured slog JSON logger (ReplaceAttr redaction) & Prometheus metrics
 │       ├── cache/
 │       │   ├── memory/
 │       │   │   └── subscription_cache.go # Local read-only subscription cache
