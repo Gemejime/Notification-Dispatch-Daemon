@@ -11,7 +11,7 @@ Build **`rag-notification-dispatch-daemon`** incrementally following a strict sp
 
 ## Human-in-the-Loop Rules
 
-- **Plan First**: Propose a clear implementation plan in `prompts/<task-name>.md` before making major architectural changes, and ask for clarification if requirements are ambiguous.
+- **Plan First**: Propose a clear implementation plan in `prompts/<task-name>.md` before making major architectural changes,detailing goals, files to modify, security, and verification steps and ask for clarification if requirements are ambiguous.
 - **Destructive Action Guards**: Always request human confirmation before executing destructive operations, dropping tables/streams, or altering git history.
 - **Demonstrate & Verify**: Provide clear verification steps, unit/race test output, and OpenAPI sync confirmation after completing each work unit.
 
