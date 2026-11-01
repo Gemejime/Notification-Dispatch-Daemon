@@ -400,7 +400,7 @@ message NotificationEventEnvelope {
 ```
 
 ### B. Downstream Webhook Delivery Task (`api/proto/v1/webhook_task.proto`)
-Enqueued into Redis Streams / RabbitMQ for consumption by `rag-webhook-delivery-worker`:
+Enqueued into Redis Streams / RabbitMQ (`rag:webhook:tasks`) for consumption by `rag-webhook-delivery-worker` (ADR-001: the dispatch daemon resolves the tenant's `secret_ref` reference and routing metadata in under $\le 15\text{ms}$, while `rag-webhook-delivery-worker` in the egress DMZ resolves the KMS/Vault secret, generates the `X-RAG-Signature-256` HMAC-SHA256 signature over `<timestamp>.<payload_json>`, executes HTTP POST with exponential backoff jitter, and enforces SSRF firewalling):
 
 ```protobuf
 syntax = "proto3";
@@ -411,16 +411,16 @@ option go_package = "github.com/gemejime/rag-notification-dispatch-daemon/api/pr
 
 message WebhookDeliveryTask {
   string task_id = 1;            // Deterministic idempotency key: sha256(tenant_id + event_id + target_id)
-  string event_id = 2;
-  string tenant_id = 3;
-  string target_id = 4;
-  string target_url = 5;
+  string event_id = 2;           // Originating CDC outbox event_id
+  string tenant_id = 3;          // Tenant isolation boundary
+  string target_id = 4;          // Configured webhook target UUID
+  string target_url = 5;         // Customer destination URL (validated/called by rag-webhook-delivery-worker)
   string secret_ref = 6;         // KMS/Vault reference for HMAC-SHA256 signing key (never raw secret in logs)
-  string signature_header = 7;   // Pre-computed HMAC-SHA256 signature header (X-RAG-Signature-256)
-  int64 timestamp_unix_sec = 8;
-  string event_type = 9;
-  bytes payload_json = 10;
-  string trace_id = 11;
+  string signature_header_name = 7; // Target HTTP signature header name (default: "X-RAG-Signature-256")
+  int64 timestamp_unix_sec = 8;  // Task creation epoch timestamp for replay protection
+  string event_type = 9;         // Domain event type (e.g. "ingestion.milestone")
+  bytes payload_json = 10;       // Pre-serialized JSON payload bytes
+  string trace_id = 11;          // OpenTelemetry W3C traceparent correlation ID
 }
 ```
 
@@ -439,8 +439,8 @@ message WebhookDeliveryTask {
 4. **Bounded `Last-Event-ID` Replay Buffer (`internal/application/query/fetch_replay_events.go`)**:
    - Key: `rag:notify:replay:{tenant_id}` (Redis Stream `MAXLEN ~ 1000` with `TTL = 3600s`), queried with rate-limited `XRANGE` on client reconnect.
 
-### B. PostgreSQL 16+ Cold-Path Configuration Tables (`internal/infrastructure/persistence/postgres/`)
-> **CRITICAL INVARIANT (ADR-004)**: These tables are queried **ONLY** on cold start or asynchronous `tenant.config.updated` cache invalidation via PgBouncer. **Zero SQL reads** are permitted on the hot CDC ingestion path.
+### B. PostgreSQL 16+ Cold-Path Configuration & Journal Tables (`internal/infrastructure/persistence/postgres/`)
+> **CRITICAL INVARIANT (ADR-004)**: `tenant_notification_subscriptions` and `tenant_webhook_targets` are queried **ONLY** on cold start or asynchronous `tenant.config.updated` cache invalidation via PgBouncer. **Zero synchronous SQL reads** are permitted on the hot CDC ingestion path. `notification_event_journal` (`event_journal_repo.go`) is written asynchronously off the critical path or used as a cold fallback for audit/journal continuity.
 
 ```sql
 CREATE TABLE IF NOT EXISTS tenant_notification_subscriptions (
@@ -466,6 +466,20 @@ CREATE TABLE IF NOT EXISTS tenant_webhook_targets (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_targets_tenant ON tenant_webhook_targets(tenant_id);
+
+CREATE TABLE IF NOT EXISTS notification_event_journal (
+    event_id VARCHAR(64) PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL,
+    user_id VARCHAR(64),
+    source_service VARCHAR(64) NOT NULL,
+    event_type VARCHAR(128) NOT NULL,
+    severity VARCHAR(16) NOT NULL,
+    is_terminal BOOLEAN NOT NULL DEFAULT FALSE,
+    payload_json JSONB NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL,
+    dispatched_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_event_journal_tenant_occurred ON notification_event_journal(tenant_id, occurred_at DESC);
 ```
 
 ---
@@ -480,3 +494,28 @@ CREATE INDEX IF NOT EXISTS idx_webhook_targets_tenant ON tenant_webhook_targets(
 | `notification_dropped_frames_total` | Counter | `tenant_id`, `reason` | Alert if dropped frames $> 1\%$ of total emitted frames across an active tenant |
 | `notification_webhook_enqueued_total` | Counter | `tenant_id`, `status` | Target hand-off latency $P99 \le 15\text{ms}$ |
 | `notification_cache_invalidations_total` | Counter | `reason` | Coherence propagation $\le 100\text{ms}$ |
+
+---
+
+## 6. 12-Factor Environment Configuration Matrix
+
+| Environment Variable | Default | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `GOMEMLIMIT` | `1800MiB` | Yes | Go runtime soft memory limit inside `2GiB` pod ceiling |
+| `GOGC` | `80` | Yes | Go garbage collector target percentage to prevent OOM spikes |
+| `NODE_ID` | Pod hostname | Yes | Unique daemon instance identifier for `pod.{node_id}.events` targeted routing |
+| `HTTP_PORT` | `8080` | Yes | HTTP/2 SSE & REST listening port |
+| `POSTGRES_DSN` | — | Yes (Secret) | PgBouncer PostgreSQL 16+ connection string (strictly cold-path only; redacted in logs) |
+| `REDIS_ADDRS` | — | Yes | Comma-separated Redis 7.2 Cluster nodes |
+| `REDIS_PASSWORD` | — | No (Secret) | Redis authentication secret (strictly redacted in logs) |
+| `KAFKA_BROKERS` | — | Yes | Comma-separated Apache Kafka 3.7+ bootstrap brokers |
+| `KAFKA_CONSUMER_GROUP` | `rag-notification-dispatch-daemon` | Yes | Consumer group ID for CDC outbox topics |
+| `KAFKA_CDC_TOPICS` | `rag.cdc.kb-catalog,rag.cdc.ingestion,rag.cdc.chunk-lifecycle` | Yes | Upstream CDC outbox topics |
+| `WEBHOOK_QUEUE_STREAM` | `rag:webhook:tasks` | Yes | Redis Stream / RabbitMQ routing key for `rag-webhook-delivery-worker` |
+| `SSE_RING_BUFFER_SIZE` | `256` | Yes | Per-client non-blocking ring buffer capacity |
+| `SSE_SLOW_CONSUMER_TIMEOUT` | `5s` | Yes | Continuous buffer saturation duration before client eviction |
+| `SSE_HEARTBEAT_INTERVAL` | `15s` | Yes | Interval for `: ping\n\n` keepalive frames flushed via `http.Flusher` |
+| `DRAIN_JITTER_MIN` | `30s` | Yes | Minimum SIGTERM staggered drain window (`terminationGracePeriodSeconds: 75`) |
+| `DRAIN_JITTER_MAX` | `60s` | Yes | Maximum SIGTERM staggered drain window (`terminationGracePeriodSeconds: 75`) |
+| `JWT_PUBLIC_KEY_PEM` | — | Yes (Secret) | Public key / JWKS reference for verifying SSE channel bearer tokens |
+| `LOG_LEVEL` | `INFO` | No | `slog` JSON logging threshold (`DEBUG`, `INFO`, `WARN`, `ERROR`) |

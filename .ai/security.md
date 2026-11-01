@@ -11,8 +11,8 @@
 3. **Slow-Loris & Connection Exhaustion Defense**:
    - Malicious or stalled clients attempting to exhaust pod memory via throttled TCP receive windows are isolated behind bounded 256-event ring buffers (`ring_buffer.go`) and forcibly evicted if buffer saturation persists for $> 5\text{ seconds}$.
    - Reconnect and `Last-Event-ID` replay backfill queries (`fetch_replay_events.go`) are governed by token-bucket rate limiters to prevent Redis CPU exhaustion during reconnection storms.
-4. **Cryptographic Webhook Task Signing**:
-   - Outbound webhook tasks enqueued to Redis Streams / RabbitMQ (`dispatch_webhook_task.go`) carry HMAC-SHA256 signatures (`X-RAG-Signature-256`) computed over `<timestamp>.<payload_json>` or reference KMS/Vault secret handles (`secret_ref`) without exposing plaintext signing keys in logs or public APIs.
+4. **Cryptographic Webhook Task Signing & Secret Isolation**:
+   - Outbound webhook tasks enqueued to Redis Streams / RabbitMQ (`dispatch_webhook_task.go`) carry KMS/Vault secret handles (`secret_ref`), deterministic idempotency keys (`task_id = sha256(tenant_id + event_id + target_id)`), and signing metadata (`X-RAG-Signature-256`) so `rag-webhook-delivery-worker` in the egress DMZ can compute HMAC-SHA256 signatures over `<timestamp>.<payload_json>` without ever exposing plaintext signing keys in daemon logs or public APIs.
 5. **Distroless Non-Root Container Hardening**:
    - Packaged using `gcr.io/distroless/static:nonroot` (`runAsNonRoot: true`, UID `65532`, `readOnlyRootFilesystem: true`, dropped Linux capabilities `ALL`, `ulimit -n 65535`).
 
