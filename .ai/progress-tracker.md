@@ -3,11 +3,12 @@
 ## Current Phase
 
 - **Phase 1: Ingestion Pipeline & Contracts** (🟢 Completed)
-- **Next Up — Phase 2: High-Density SSE Engine** (⏳ Ready to start)
+- **Phase 2: High-Density SSE Engine** (🟢 Completed)
+- **Next Up — Phase 3: Targeted Routing & Egress Enqueueing** (⏳ Ready to start)
 
 ## Current Goal
 
-- Complete Phase 1 (Protobuf v3 & OpenAPI 3.1 contracts, zero-intermediary SSE JSON byte formatting pipeline, pure hexagonal domain layer, pod-local in-memory subscription cache with `<= 100ms` reload-on-invalidation, cold-path PostgreSQL repositories, Kafka CDC consumer group with offset tracking & poison-pill isolation, and Secured Logging + Prometheus telemetry) and prepare for Phase 2 (`stream_handler.go`, `flusher.go`, `ring_buffer.go`, `connection_hub.go`).
+- Complete Phase 2 (bounded 256-event non-blocking ring buffer with slow-consumer drops and terminal frame retention, local node ConnectionHub with user isolation and slow consumer sweep, edge proxy bypass flusher with 15s heartbeats and Slow-Loris write deadline protection, multiplexed SSE stream handler, active session cursor pagination, HTTP security middleware, and ADR-005 per-connection staggered SIGTERM draining) and prepare for Phase 3 (Redis targeted routing `pod.{node_id}.events`, `PresenceRegistry`, and HMAC-SHA256 webhook task enqueueing).
 
 ---
 
@@ -16,9 +17,43 @@
 | Phase | Duration | Core Domain Focus | Deliverables & Milestone Exit Criteria | Status |
 | :--- | :--- | :--- | :--- | :--- |
 | **Phase 1: Ingestion Pipeline & Contracts** | Weeks 1–2 | Event Consumption & Schemas | • Repository governance: `.gitignore` (excluding `tasks/`), `.github/workflows/ci.yml` (`lint-and-typecheck`, `security-and-logging-audit`, `openapi-and-doc-api-sync`, `test-suites`), `.ai/`, `.ai.md`, and `GEMINI.MD`.<br>• Protobuf v3 contracts (`api/proto/v1/notification_event.proto`, `webhook_task.proto`, `contracts.pb.go`) for internal Kafka outbox events and webhook delivery tasks; clean JSON formatting pipeline for SSE client writes.<br>• Kafka consumer group setup (`internal/infrastructure/queue/kafka/cdc_consumer.go`) with offset tracking.<br>• In-memory local tenant subscription cache (`internal/infrastructure/cache/memory/subscription_cache.go`) with asynchronous `tenant.config.updated` invalidation listeners (`<= 100ms`). | 🟢 Completed |
-| **Phase 2: High-Density SSE Engine** | Weeks 3–4 | Streaming Infrastructure | • Non-blocking SSE stream handler (`internal/infrastructure/transport/sse/stream_handler.go`) using epoll/netpoll or bounded per-client channels (buffer size: 256 events in `ring_buffer.go`).<br>• Edge proxy compatibility: immediate `http.Flusher` comment frames (`: ping\n\n`) every 15s (`flusher.go`) and `X-Accel-Buffering: no` enforcement.<br>• Slow consumer drop policies dropping non-terminal progress frames at capacity (256) while retaining terminal transitions, and evicting connections stalled for `> 5s`. | ⏳ Planned |
+| **Phase 2: High-Density SSE Engine** | Weeks 3–4 | Streaming Infrastructure | • Non-blocking SSE stream handler (`internal/infrastructure/transport/sse/stream_handler.go`) with bounded per-client channels (buffer size: 256 events in `ring_buffer.go`).<br>• Edge proxy compatibility: immediate `http.Flusher` comment frames (`: ping\n\n`) every 15s (`flusher.go`), `X-Accel-Buffering: no` enforcement, and Slow-Loris write deadline protection.<br>• Slow consumer drop policies dropping non-terminal progress frames at capacity (256) while retaining terminal transitions, and evicting connections stalled for `> 5s` (`connection_hub.go`).<br>• ADR-005 per-connection staggered graceful draining with randomized jitter [30s, 60s] and `retry: <ms>\n\n` directive frame emission. | 🟢 Completed |
 | **Phase 3: Targeted Routing & Egress Enqueueing** | Weeks 5–6 | Targeted Node Routing & Queues | • Targeted pod routing channels on Redis (`pod.{node_id}.events` via `targeted_router.go` and `presence_registry.go`) replacing broadcast Pub/Sub (ADR-003).<br>• Webhook routing evaluator (`rule_evaluator.go`, `dispatch_webhook_task.go`) and HMAC-SHA256 task enqueueing to Redis Streams / RabbitMQ (`P99 <= 15ms`).<br>• Bounded `Last-Event-ID` replay buffer in Redis (`fetch_replay_events.go`) with rate-limited backfill queries. | ⏳ Planned |
 | **Phase 4: Resilience, Chaos & Production Rollout** | Weeks 7–8 | Load Tuning & Rollout | • Soak testing with 100,000 concurrent persistent connections across 5 pods (`~20,000` per pod, RSS `<= 1.6GiB`) under continuous broadcast bursts.<br>• Chaos testing verifying graceful draining on `SIGTERM` with client reconnection jitter spread across 30–60s (`terminationGracePeriodSeconds: 75`) without thundering herd spikes or Redis CPU `> 60%`.<br>• Production Helm cutover (`deployments/helm/`) and multi-stage distroless Dockerfile (`gcr.io/distroless/static:nonroot`, `GOMEMLIMIT=1800MiB`, `GOGC=80`). | ⏳ Planned |
+
+---
+
+## Completed Units
+
+- **Phase 2 Implementation — High-Density SSE Engine**:
+  - **Bounded Per-Client Ring Buffer (`internal/infrastructure/transport/hub/ring_buffer.go`)**:
+    - Compact 256-event ring buffer layout (~2KiB baseline heap footprint).
+    - Non-blocking $O(1)$ push with channel-1 wakeups; drops intermediate non-terminal frames at capacity (`reason="ring_buffer_saturated"`).
+    - Terminal frame preemption: evicts oldest unread non-terminal frame while preserving FIFO ordering (`reason="terminal_frame_preemption"`).
+    - All-256-terminal overflow guard: flags connection for immediate eviction on arrival of 257th terminal frame (`reason="all_terminal_eviction"`).
+    - Continuous saturation ceiling: marks and evicts slow consumers continuously saturated for $> 5\text{s}$ (`reason="slow_consumer_evicted"`).
+  - **Local Node Connection Hub (`internal/infrastructure/transport/hub/connection_hub.go`)**:
+    - Pod-local session registries indexed by `tenant_id`, `user_id`, and `connection_id`.
+    - Strict per-tenant and user-targeted (`event.UserID != ""`) push isolation with optional `severity_filter` comparison.
+    - Implemented `command.NodeEventDispatcher` (`DispatchSSEFrame`) wired to `ProcessCDCEventHandler`.
+    - Background slow-consumer sweeper evicting idle-traffic saturated buffers.
+    - ADR-005 per-connection staggered graceful draining assigning independent jitter delays in `[30s, 60s]` and emitting `retry: <ms>\n\n` frames.
+    - Deterministic cursor-based pagination for `GET /v1/notifications/sessions`.
+  - **Edge Proxy Flusher & Slow-Loris Guard (`internal/infrastructure/transport/sse/flusher.go`)**:
+    - Enforced `X-Accel-Buffering: no`, `Content-Type: text/event-stream; charset=utf-8`, and `Cache-Control: no-cache`.
+    - Immediate and periodic 15s `: ping\n\n` heartbeat comment frames via `http.Flusher`.
+    - `http.ResponseController.SetWriteDeadline` bounding write stalls against zeroed TCP receive windows.
+    - Histogram telemetry for `notification_client_write_latency_seconds{node_id}`.
+  - **Multiplexed Stream Handler (`internal/infrastructure/transport/sse/stream_handler.go`)**:
+    - Serves `GET /v1/notifications/stream` with high-watermark deduplicated backfill port, 15s keepalive loop, and graceful drain listener.
+  - **Application Commands & Queries (`internal/application/`)**:
+    - Implemented `command/register_connection.go`, `command/terminate_connection.go`, and `query/list_active_sessions.go`.
+  - **HTTP Security Middleware & Unified Router (`internal/infrastructure/transport/http/`)**:
+    - Implemented `middleware/middleware.go` (correlation ID, sanitized panic recovery, secured logging, bearer token auth, tenant isolation 403, and token-bucket reconnect rate limiting 429).
+    - Implemented `router.go` assembling probes, docs, streams, sessions, and cache invalidation routes.
+  - **Daemon Entry Point & Unit Test Suite (`cmd/`, `test/unit/`)**:
+    - Wired `main.go` with `ConnectionHub`, `StreamHandler`, `Router`, and staggered `SIGTERM` draining.
+    - Implemented `test/unit/phase2_sse_engine_test.go` verifying ring buffer drop/preemption/eviction policies, hub isolation, slow-consumer sweeping, staggered draining, cursor pagination, flusher headers, and security middleware.
 
 ---
 
