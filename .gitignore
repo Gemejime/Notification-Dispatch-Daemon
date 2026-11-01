@@ -13,8 +13,10 @@ dist/
 *.dll
 *.so
 *.dylib
-notification-daemon
-rag-notification-dispatch-daemon
+/notification-daemon
+/rag-notification-dispatch-daemon
+!cmd/notification-daemon/
+!cmd/notification-daemon/**
 
 # Go Test & Coverage Artifacts
 *.test
