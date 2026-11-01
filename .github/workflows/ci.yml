@@ -39,13 +39,11 @@ jobs:
 
       - name: Verify Go Formatting (gofmt)
         run: |
-          if [ -d "cmd" ] || [ -d "internal" ] || [ -d "test" ]; then
-            UNFORMATTED=$(gofmt -s -l .)
-            if [ -n "$UNFORMATTED" ]; then
-              echo "The following Go files are not properly formatted with gofmt -s:"
-              echo "$UNFORMATTED"
-              exit 1
-            fi
+          UNFORMATTED=$(gofmt -s -l .)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "The following Go files are not properly formatted with gofmt -s:"
+            echo "$UNFORMATTED"
+            exit 1
           fi
           echo "gofmt formatting check passed."
 
@@ -55,6 +53,10 @@ jobs:
             go mod verify
             go vet ./...
           else
+            if [ -n "$(find . -name '*.go' -print -quit)" ]; then
+              echo "ERROR: Go source files found without go.mod."
+              exit 1
+            fi
             echo "go.mod not yet initialized; skipping go vet until Phase 1 code scaffold."
           fi
 
@@ -80,7 +82,7 @@ jobs:
       - name: Audit .gitignore & Secret Exclusions
         run: |
           grep -q "^tasks/" .gitignore || (echo "ERROR: tasks/ must be ignored in .gitignore" && exit 1)
-          grep -q "^\.env" .gitignore || (echo "ERROR: .env must be ignored in .gitignore" && exit 1)
+          grep -qx "\.env" .gitignore || (echo "ERROR: .env must be ignored in .gitignore" && exit 1)
           echo ".gitignore security exclusions verified."
 
       - name: Audit Secured Logging & Redaction Invariants
@@ -93,7 +95,7 @@ jobs:
               exit 1
             fi
             # Fail if HMAC secrets, raw bearer tokens, or raw webhook signing keys are logged directly
-            if grep -rnE '(hmac_secret|signing_secret|authorization_token|bearer_token)\s*,\s*[a-zA-Z0-9_.]+' cmd/ internal/ 2>/dev/null | grep -i "slog\."; then
+            if grep -rnE '["'"'"']?(hmac_secret|signing_secret|authorization_token|bearer_token)["'"'"']?\s*,\s*[a-zA-Z0-9_.]+' cmd/ internal/ 2>/dev/null | grep -i "slog\."; then
               echo "ERROR: Potential raw secret or token logged in slog statement."
               exit 1
             fi
@@ -171,13 +173,17 @@ jobs:
       - name: Run Unit Test Suite with Race Detector
         run: |
           if [ -f "go.mod" ]; then
-            GOMEMLIMIT=${{ env.GOMEMLIMIT }} GOGC=${{ env.GOGC }} go test -v -race -coverprofile=coverage.txt ./internal/... ./test/unit/...
+            PKGS="./cmd/... ./internal/..."
+            if [ -d "test/unit" ]; then
+              PKGS="$PKGS ./test/unit/..."
+            fi
+            GOMEMLIMIT=${{ env.GOMEMLIMIT }} GOGC=${{ env.GOGC }} go test -v -race -coverprofile=coverage.txt $PKGS
           else
             echo "go.mod not yet initialized; unit test suite ready for Phase 1 implementation."
           fi
 
       - name: Run Integration Test Suite
-        if: hashFiles('go.mod') != '' && hashFiles('test/integration/**') != ''
+        if: hashFiles('go.mod') != '' && hashFiles('test/integration/**/*_test.go') != ''
         run: |
           GOMEMLIMIT=${{ env.GOMEMLIMIT }} GOGC=${{ env.GOGC }} go test -v -race ./test/integration/...
 
