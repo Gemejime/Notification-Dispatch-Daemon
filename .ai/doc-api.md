@@ -305,7 +305,7 @@ components:
         is_terminal:
           type: boolean
           description: >-
-            If true (e.g. COMPLETED/FAILED), ring buffer never drops this frame during slow-consumer saturation.
+            If true (e.g. COMPLETED/FAILED), ring buffer retains this frame by evicting an unread non-terminal frame during slow-consumer saturation; if all 256 buffered frames are already terminal, the connection is evicted immediately and relies on Last-Event-ID recovery to preserve the 256-event bound and non-blocking writes.
         occurred_at:
           type: string
           format: date-time

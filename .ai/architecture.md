@@ -18,7 +18,7 @@
 
 ## Production-Grade 5-Layer Backend Architecture
 
-Aligned with [Production Grade Backend Concepts.pdf](../tasks/Production%20Grade%20Backend%20Concepts.pdf) and the Hexagonal / Clean Architecture structure in [RAG Notification Dispatch Daemon Service Implementation Plan.pdf](../tasks/RAG%20Notification%20Dispatch%20Daemon%20Service%20Implementation%20Plan.pdf):
+Aligned with `Production Grade Backend Concepts.pdf` and the Hexagonal / Clean Architecture structure in `RAG Notification Dispatch Daemon Service Implementation Plan.pdf`:
 
 ### Layer 1: API & Routing (`internal/infrastructure/transport/`, `cmd/notification-daemon/`)
 1. **Entry Points (`cmd/notification-daemon/main.go`)**:

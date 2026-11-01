@@ -39,6 +39,7 @@
 2. **Slow Consumer Mitigation (`ring_buffer.go`)**:
    - Isolate every client stream behind a bounded channel/ring buffer of capacity **256 events**.
    - When the buffer reaches 256 items, drop unread non-terminal progress frames (`is_terminal == false`) and increment `notification_dropped_frames_total`, while preserving terminal state transitions (`is_terminal == true`).
+   - When all 256 buffered frames are terminal (`is_terminal == true`) and another terminal frame arrives, evict the connection immediately and rely on `Last-Event-ID` recovery, preserving the 256-event bound and non-blocking writes.
    - If a client's buffer remains saturated continuously for $> 5\text{ seconds}$, terminate and evict the connection cleanly to protect pod memory.
 3. **Edge Proxy Guardrails (`stream_handler.go` & `flusher.go`)**:
    - Immediately write headers `Content-Type: text/event-stream; charset=utf-8`, `Cache-Control: no-cache, no-transform`, `Connection: keep-alive`, and `X-Accel-Buffering: no`.
