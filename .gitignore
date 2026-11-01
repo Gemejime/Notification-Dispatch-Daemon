@@ -1,0 +1,59 @@
+# =============================================================================
+# .gitignore - RAG Notification Dispatch Daemon (rag-notification-dispatch-daemon)
+# =============================================================================
+
+# Reference & Specification Blueprints
+tasks/
+
+# Go Build Artifacts & Binaries
+bin/
+dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+notification-daemon
+rag-notification-dispatch-daemon
+
+# Go Test & Coverage Artifacts
+*.test
+*.out
+coverage.txt
+coverage.html
+*.prof
+*.pprof
+
+# Go Workspace & Vendor
+go.work
+go.work.sum
+vendor/
+
+# Environment Variables & Secrets (Strict Security Invariant)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+secrets/
+credentials.json
+
+# IDE & Editor Directories
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS Generated Files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Temporary & Scratch Directories
+tmp/
+temp/
+logs/
+*.log

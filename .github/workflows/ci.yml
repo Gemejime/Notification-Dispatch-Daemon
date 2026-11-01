@@ -1,0 +1,204 @@
+name: CI Pipeline - RAG Notification Dispatch Daemon
+
+on:
+  push:
+    branches:
+      - main
+      - rag-notification-dispatch-daemon
+  pull_request:
+    branches:
+      - main
+      - rag-notification-dispatch-daemon
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.23"
+  GOMEMLIMIT: "1800MiB"
+  GOGC: "80"
+
+jobs:
+  # ===========================================================================
+  # Job 1: Lint & Typecheck (Go 1.23+, go vet, gofmt, golangci-lint)
+  # ===========================================================================
+  lint-and-typecheck:
+    name: Lint & Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Verify Go Formatting (gofmt)
+        run: |
+          if [ -d "cmd" ] || [ -d "internal" ] || [ -d "test" ]; then
+            UNFORMATTED=$(gofmt -s -l .)
+            if [ -n "$UNFORMATTED" ]; then
+              echo "The following Go files are not properly formatted with gofmt -s:"
+              echo "$UNFORMATTED"
+              exit 1
+            fi
+          fi
+          echo "gofmt formatting check passed."
+
+      - name: Run Go Vet & Static Typechecking
+        run: |
+          if [ -f "go.mod" ]; then
+            go mod verify
+            go vet ./...
+          else
+            echo "go.mod not yet initialized; skipping go vet until Phase 1 code scaffold."
+          fi
+
+      - name: Run golangci-lint
+        if: hashFiles('go.mod') != ''
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          args: --timeout=5m
+
+  # ===========================================================================
+  # Job 2: Security & Secured Logging Audit
+  # ===========================================================================
+  security-and-logging-audit:
+    name: Security & Logging Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Audit .gitignore & Secret Exclusions
+        run: |
+          grep -q "^tasks/" .gitignore || (echo "ERROR: tasks/ must be ignored in .gitignore" && exit 1)
+          grep -q "^\.env" .gitignore || (echo "ERROR: .env must be ignored in .gitignore" && exit 1)
+          echo ".gitignore security exclusions verified."
+
+      - name: Audit Secured Logging & Redaction Invariants
+        run: |
+          echo "Auditing codebase for prohibited unredacted logging patterns and raw secret leaks..."
+          if [ -d "internal" ] || [ -d "cmd" ]; then
+            # Fail if raw fmt.Print/Println/Printf or standard log.Print is used instead of structured slog
+            if grep -rnE 'fmt\.Print(ln|f)?\(|log\.Print(ln|f)?\(|log\.Fatal' cmd/ internal/ 2>/dev/null; then
+              echo "ERROR: Unstructured logging detected. Use log/slog with JSONHandler and strict secret/PII redaction."
+              exit 1
+            fi
+            # Fail if HMAC secrets, raw bearer tokens, or raw webhook signing keys are logged directly
+            if grep -rnE '(hmac_secret|signing_secret|authorization_token|bearer_token)\s*,\s*[a-zA-Z0-9_.]+' cmd/ internal/ 2>/dev/null | grep -i "slog\."; then
+              echo "ERROR: Potential raw secret or token logged in slog statement."
+              exit 1
+            fi
+          fi
+          grep -q "Secured Logging" .ai/security.md || (echo "ERROR: Secured Logging invariant missing in .ai/security.md" && exit 1)
+          grep -q "Secured Logging" GEMINI.MD || (echo "ERROR: Secured Logging invariant missing in GEMINI.MD" && exit 1)
+          echo "Secured logging audit passed."
+
+      - name: Run govulncheck & gosec (when go.mod exists)
+        if: hashFiles('go.mod') != ''
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  # ===========================================================================
+  # Job 3: OpenAPI 3.1 & Doc API Contract Sync
+  # ===========================================================================
+  openapi-and-doc-api-sync:
+    name: OpenAPI 3.1 & Doc API Contract Sync
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify .ai/doc-api.md & OpenAPI 3.1 Contract Presence
+        run: |
+          test -f ".ai/doc-api.md" || (echo "ERROR: .ai/doc-api.md is missing" && exit 1)
+          test -f "GEMINI.MD" || (echo "ERROR: GEMINI.MD is missing" && exit 1)
+          grep -q "openapi: 3.1.0" .ai/doc-api.md || grep -q '"openapi": "3.1.0"' .ai/doc-api.md || (echo "ERROR: OpenAPI 3.1.0 schema missing in .ai/doc-api.md" && exit 1)
+          grep -q "/v1/notifications/stream" .ai/doc-api.md || (echo "ERROR: SSE stream endpoint /v1/notifications/stream missing in .ai/doc-api.md" && exit 1)
+          grep -q "/docs" .ai/doc-api.md || (echo "ERROR: /docs endpoint missing in .ai/doc-api.md" && exit 1)
+          grep -q "/api/docs" .ai/doc-api.md || (echo "ERROR: /api/docs endpoint missing in .ai/doc-api.md" && exit 1)
+          grep -q "/healthz" .ai/doc-api.md || (echo "ERROR: /healthz probe missing in .ai/doc-api.md" && exit 1)
+          grep -q "/ready" .ai/doc-api.md || (echo "ERROR: /ready probe missing in .ai/doc-api.md" && exit 1)
+          echo "Doc API & OpenAPI 3.1 contract verification passed."
+
+      - name: Validate api/openapi/openapi.yaml Sync (when present)
+        if: hashFiles('api/openapi/openapi.yaml') != ''
+        run: |
+          python3 -c '
+          import yaml, sys
+          with open("api/openapi/openapi.yaml", "r") as f:
+              spec = yaml.safe_load(f)
+          assert spec.get("openapi", "").startswith("3.1"), "OpenAPI version must be 3.1.x"
+          paths = spec.get("paths", {})
+          for req_path in ["/v1/notifications/stream", "/healthz", "/ready", "/metrics", "/docs", "/api/docs"]:
+              assert req_path in paths, f"Missing required path {req_path} in api/openapi/openapi.yaml"
+          print("api/openapi/openapi.yaml validated successfully.")
+          '
+
+  # ===========================================================================
+  # Job 4: Test Suites (Unit, Race Detector, Integration & Ring Buffer Invariants)
+  # ===========================================================================
+  test-suites:
+    name: Test Suites
+    runs-on: ubuntu-latest
+    needs:
+      - lint-and-typecheck
+      - security-and-logging-audit
+      - openapi-and-doc-api-sync
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Go ${{ env.GO_VERSION }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Run Unit Test Suite with Race Detector
+        run: |
+          if [ -f "go.mod" ]; then
+            GOMEMLIMIT=${{ env.GOMEMLIMIT }} GOGC=${{ env.GOGC }} go test -v -race -coverprofile=coverage.txt ./internal/... ./test/unit/...
+          else
+            echo "go.mod not yet initialized; unit test suite ready for Phase 1 implementation."
+          fi
+
+      - name: Run Integration Test Suite
+        if: hashFiles('go.mod') != '' && hashFiles('test/integration/**') != ''
+        run: |
+          GOMEMLIMIT=${{ env.GOMEMLIMIT }} GOGC=${{ env.GOGC }} go test -v -race ./test/integration/...
+
+  # ===========================================================================
+  # Job 5: Architecture & Deployment Guardrails (Distroless & Resource Ceiling)
+  # ===========================================================================
+  architecture-guardrails:
+    name: Architecture & Deployment Guardrails
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify Context & ADR Alignment
+        run: |
+          for file in .ai.md GEMINI.MD .ai/project-overview.md .ai/architecture.md .ai/doc-api.md .ai/code-standards.md .ai/security.md .ai/ai-workflow-rules.md .ai/agents.md .ai/progress-tracker.md; do
+            test -f "$file" || (echo "ERROR: Missing required context file $file" && exit 1)
+          done
+          grep -q "rag-notification-dispatch-daemon" .ai.md || (echo "ERROR: .ai.md not aligned to rag-notification-dispatch-daemon" && exit 1)
+          grep -q "GOMEMLIMIT=1800MiB" .ai/architecture.md || (echo "ERROR: GOMEMLIMIT=1800MiB missing in .ai/architecture.md" && exit 1)
+          grep -q "X-Accel-Buffering: no" .ai/architecture.md || (echo "ERROR: X-Accel-Buffering: no guardrail missing in .ai/architecture.md" && exit 1)
+          echo "All architecture and context guardrails verified."
