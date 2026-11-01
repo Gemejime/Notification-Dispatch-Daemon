@@ -60,6 +60,9 @@ type Pool struct {
 
 // NewPool initializes a cold-path Pool backed by the provided Querier.
 func NewPool(cfg PoolConfig, querier Querier) (*Pool, error) {
+	if querier == nil {
+		return nil, errors.New("postgres querier is required")
+	}
 	if cfg.MaxConns <= 0 {
 		cfg.MaxConns = 10
 	}
@@ -125,6 +128,22 @@ func (p *Pool) Close() error {
 func (p *Pool) QueryCount() uint64 {
 	return p.queryCount.Load()
 }
+
+// NewNoopQuerier returns a stand-in Querier that executes cold-path SQL operations as no-ops.
+// Used for local development or single-node bootstrap when no external PgBouncer driver is injected.
+func NewNoopQuerier() Querier {
+	return &noopQuerier{}
+}
+
+type noopQuerier struct{}
+
+func (n *noopQuerier) Query(_ context.Context, _ string, _ ...any) (Rows, error) {
+	return &emptyRows{}, nil
+}
+
+func (n *noopQuerier) Exec(_ context.Context, _ string, _ ...any) error { return nil }
+func (n *noopQuerier) Ping(_ context.Context) error                     { return nil }
+func (n *noopQuerier) Close() error                                     { return nil }
 
 type emptyRows struct{}
 

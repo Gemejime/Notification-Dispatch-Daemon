@@ -104,11 +104,19 @@ jobs:
           grep -q "Secured Logging" GEMINI.MD || (echo "ERROR: Secured Logging invariant missing in GEMINI.MD" && exit 1)
           echo "Secured logging audit passed."
 
+      - name: Set up Go ${{ env.GO_VERSION }}
+        if: hashFiles('go.mod') != ''
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
       - name: Run govulncheck & gosec (when go.mod exists)
         if: hashFiles('go.mod') != ''
         run: |
+          export PATH="$(go env GOPATH)/bin:$PATH"
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+          "$(go env GOPATH)/bin/govulncheck" ./...
 
   # ===========================================================================
   # Job 3: OpenAPI 3.1 & Doc API Contract Sync

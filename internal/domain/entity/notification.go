@@ -148,16 +148,13 @@ func (e NotificationEvent) Validate() error {
 }
 
 // FormatSSEDataJSON constructs the JSON body for the SSE `data:` line using a zero-intermediary byte buffer.
-// It splices the pre-validated PayloadJSON bytes directly into the output slice without map[string]any
-// unmarshaling or reflection overhead on the hot path.
+// It compacts validated PayloadJSON bytes into a single line before splicing them directly into the output slice
+// without map[string]any unmarshaling or reflection overhead on the hot path.
 func (e NotificationEvent) FormatSSEDataJSON() []byte {
-	trimmedPayload := bytes.TrimSpace(e.PayloadJSON)
-	if len(trimmedPayload) == 0 {
-		trimmedPayload = []byte("{}")
-	}
-	capacity := 160 + len(e.EventID) + len(e.TenantID) + len(e.UserID) + len(e.EventType) + len(trimmedPayload)
+	compactedPayload := compactPayloadJSON(e.PayloadJSON)
+	capacity := 160 + len(e.EventID) + len(e.TenantID) + len(e.UserID) + len(e.EventType) + len(compactedPayload)
 	buf := make([]byte, 0, capacity)
-	return e.appendSSEDataJSON(buf, trimmedPayload)
+	return e.appendSSEDataJSON(buf, compactedPayload)
 }
 
 // FormatSSEFrame formats a complete Server-Sent Events wire frame (`id:`, `event:`, `retry:`, `data:\n\n`)
@@ -166,11 +163,8 @@ func (e NotificationEvent) FormatSSEFrame(retryMs int) []byte {
 	if retryMs <= 0 {
 		retryMs = DefaultSSERetryMs
 	}
-	trimmedPayload := bytes.TrimSpace(e.PayloadJSON)
-	if len(trimmedPayload) == 0 {
-		trimmedPayload = []byte("{}")
-	}
-	capacity := 208 + 2*len(e.EventID) + len(e.TenantID) + len(e.UserID) + 2*len(e.EventType) + len(trimmedPayload)
+	compactedPayload := compactPayloadJSON(e.PayloadJSON)
+	capacity := 208 + 2*len(e.EventID) + len(e.TenantID) + len(e.UserID) + 2*len(e.EventType) + len(compactedPayload)
 	buf := make([]byte, 0, capacity)
 
 	buf = append(buf, "id: "...)
@@ -180,12 +174,36 @@ func (e NotificationEvent) FormatSSEFrame(retryMs int) []byte {
 	buf = append(buf, "\nretry: "...)
 	buf = strconv.AppendInt(buf, int64(retryMs), 10)
 	buf = append(buf, "\ndata: "...)
-	buf = e.appendSSEDataJSON(buf, trimmedPayload)
+	buf = e.appendSSEDataJSON(buf, compactedPayload)
 	buf = append(buf, "\n\n"...)
 	return buf
 }
 
-func (e NotificationEvent) appendSSEDataJSON(buf []byte, trimmedPayload []byte) []byte {
+func compactPayloadJSON(raw []byte) []byte {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return []byte("{}")
+	}
+	// Fast-path: if there is no whitespace or newline character inside, no allocation or compaction needed.
+	hasWhitespace := false
+	for _, b := range trimmed {
+		if b == '\n' || b == '\r' || b == '\t' || b == ' ' {
+			hasWhitespace = true
+			break
+		}
+	}
+	if !hasWhitespace {
+		return trimmed
+	}
+	var dst bytes.Buffer
+	dst.Grow(len(trimmed))
+	if err := json.Compact(&dst, trimmed); err != nil {
+		return []byte("{}")
+	}
+	return dst.Bytes()
+}
+
+func (e NotificationEvent) appendSSEDataJSON(buf []byte, compactedPayload []byte) []byte {
 	buf = append(buf, `{"event_id":`...)
 	buf = strconv.AppendQuote(buf, e.EventID)
 	buf = append(buf, `,"tenant_id":`...)
@@ -203,7 +221,7 @@ func (e NotificationEvent) appendSSEDataJSON(buf []byte, trimmedPayload []byte) 
 	buf = append(buf, `,"occurred_at":"`...)
 	buf = e.OccurredAt.UTC().AppendFormat(buf, time.RFC3339)
 	buf = append(buf, `","payload":`...)
-	buf = append(buf, trimmedPayload...)
+	buf = append(buf, compactedPayload...)
 	buf = append(buf, '}')
 	return buf
 }

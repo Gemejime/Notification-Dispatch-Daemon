@@ -1,6 +1,7 @@
 package router
 
 import (
+	"strconv"
 	"sync"
 	"time"
 
@@ -55,7 +56,7 @@ func (f *Filter) CheckAndRecordDuplicate(tenantID, eventID string, now time.Time
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	key := tenantID + ":" + eventID
+	key := strconv.Itoa(len(tenantID)) + ":" + tenantID + ":" + eventID
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -110,10 +111,10 @@ func (f *Filter) AllowTenantBurst(tenantID string, rateLimitRPS int, isTerminal 
 	elapsed := now.Sub(bucket.lastRefill).Seconds()
 	if elapsed > 0 {
 		bucket.tokens += elapsed * bucket.refillRate
-		if bucket.tokens > bucket.capacity {
-			bucket.tokens = bucket.capacity
-		}
 		bucket.lastRefill = now
+	}
+	if bucket.tokens > bucket.capacity {
+		bucket.tokens = bucket.capacity
 	}
 
 	if bucket.tokens < 1.0 {

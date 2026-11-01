@@ -367,7 +367,7 @@ components:
 
 ## 3. Protobuf v3 Contracts (`api/proto/v1/`)
 
-The Protobuf v3 contracts (`notification_event.proto` and `webhook_task.proto`) are bound in Go via [`api/proto/v1/contracts.pb.go`](../api/proto/v1/contracts.pb.go), which provides deterministic Protobuf binary wire marshaling (`MarshalWire()` / `UnmarshalWire()`), transparent JSON wire fallback, strict schema validation (`Validate()`), and Secured Logging `slog.LogValuer` redaction of `payload_json` and `secret_ref`.
+The Protobuf v3 contracts (`notification_event.proto` and `webhook_task.proto`) are bound in Go via [`api/proto/v1/contracts.pb.go`](../api/proto/v1/contracts.pb.go), which provides deterministic Protobuf binary wire marshaling (`MarshalWire()` / `UnmarshalWire()`) for both messages, transparent JSON wire fallback solely on `NotificationEventEnvelope.UnmarshalWire()` (while `WebhookDeliveryTask.UnmarshalWire()` accepts Protobuf binary wire format only), strict schema validation (`Validate()`), and Secured Logging `slog.LogValuer` redaction of `payload_json` and `secret_ref`.
 
 ### A. CDC Outbox Event Envelope (`api/proto/v1/notification_event.proto`)
 Consumed from Kafka 3.7+ / Redis 7.2 Streams outbox topics produced by `rag-kb-catalog-service`, `rag-ingestion-coordinator`, and `rag-chunk-lifecycle-service`:
