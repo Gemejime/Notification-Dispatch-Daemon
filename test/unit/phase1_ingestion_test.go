@@ -332,6 +332,18 @@ func TestZeroIntermediarySSEFrameFormatting(t *testing.T) {
 	if !json.Valid([]byte(dataLine)) {
 		t.Fatalf("SSE data line is not valid JSON: %s", dataLine)
 	}
+
+	// Verify multiline JSON payloads are compacted onto a single SSE data line.
+	evMultiline := ev
+	evMultiline.PayloadJSON = []byte("{\n  \"document_id\": \"doc_99\",\n  \"stage\": \"CHUNK_COMPILATION\"\n}")
+	multilineFrame := string(evMultiline.FormatSSEFrame(5000))
+	multilineData := strings.TrimSuffix(strings.Split(multilineFrame, "data: ")[1], "\n\n")
+	if strings.Contains(multilineData, "\n") {
+		t.Fatalf("expected compacted single-line SSE data JSON, got newline in: %q", multilineData)
+	}
+	if strings.Contains(string(evMultiline.FormatSSEDataJSON()), "\n") {
+		t.Fatalf("expected FormatSSEDataJSON to compact multiline payload onto a single line")
+	}
 }
 
 func TestZeroHotPathSQLReadsAndRuleEvaluation(t *testing.T) {
@@ -363,6 +375,10 @@ func TestZeroHotPathSQLReadsAndRuleEvaluation(t *testing.T) {
 			UpdatedAt:           now,
 		},
 	})
+
+	if _, err := postgres.NewPool(postgres.PoolConfig{}, nil); err == nil {
+		t.Fatalf("expected NewPool with nil querier to return an error")
+	}
 
 	pool, err := postgres.NewPool(postgres.PoolConfig{
 		DSN: observability.NewSecretString("postgres://user:supersecret@pgbouncer:6432/rag"),
@@ -514,12 +530,18 @@ func TestBoundedDeduplicationAndBurstRateLimiting(t *testing.T) {
 	const maxCap = 10
 	filter := router.NewFilter(1*time.Minute, maxCap)
 
-	// 1. Duplicate detection within window.
+	// 1. Duplicate detection within window + unambiguous colon delimiter boundary check.
 	if filter.CheckAndRecordDuplicate("tnt_1", "evt_1", now) {
 		t.Fatalf("first sighting of evt_1 must not be marked duplicate")
 	}
 	if !filter.CheckAndRecordDuplicate("tnt_1", "evt_1", now.Add(5*time.Second)) {
 		t.Fatalf("second sighting of evt_1 within TTL must be marked duplicate")
+	}
+	if filter.CheckAndRecordDuplicate("a:b", "c", now) {
+		t.Fatalf("first sighting of (a:b, c) must not be duplicate")
+	}
+	if filter.CheckAndRecordDuplicate("a", "b:c", now) {
+		t.Fatalf("(a, b:c) must not collide with (a:b, c)")
 	}
 
 	// 2. Bounded capacity enforcement under high volume.
@@ -541,6 +563,18 @@ func TestBoundedDeduplicationAndBurstRateLimiting(t *testing.T) {
 	}
 	if !filter.AllowTenantBurst("tnt_burst", 5, true, now) {
 		t.Fatalf("terminal event (is_terminal=true) must never be dropped by rate limiter")
+	}
+
+	// Verify capacity clamp applies even when elapsed == 0 and rateLimitRPS is dynamically lowered.
+	if !filter.AllowTenantBurst("tnt_clamp", 10, false, now) {
+		t.Fatalf("expected initial event for tnt_clamp at rate=10 to be allowed")
+	}
+	// Lower rate to 1 at the exact same timestamp (elapsed == 0); tokens (9) must be clamped to capacity (1), consuming 1 -> 0 remaining.
+	if !filter.AllowTenantBurst("tnt_clamp", 1, false, now) {
+		t.Fatalf("expected first event after rate reduction to 1 to be allowed")
+	}
+	if filter.AllowTenantBurst("tnt_clamp", 1, false, now) {
+		t.Fatalf("expected second event at same timestamp with rate=1 to be rate-limited after capacity clamp")
 	}
 }
 

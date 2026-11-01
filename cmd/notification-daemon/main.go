@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"math/rand/v2"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,8 +21,10 @@ import (
 	"time"
 
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/application/command"
+	"github.com/gemejime/rag-notification-dispatch-daemon/internal/domain/entity"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/domain/router"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/cache/memory"
+	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/cache/redis"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/observability"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/persistence/postgres"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/queue/kafka"
@@ -30,6 +33,8 @@ import (
 const (
 	defaultMemoryLimitBytes = 1800 * 1024 * 1024 // 1800MiB
 	defaultGCPercent        = 80
+	// defaultShutdownBudget matches Kubernetes terminationGracePeriodSeconds: 75 (ADR-005).
+	defaultShutdownBudget = 75 * time.Second
 )
 
 // Config holds the 12-Factor environment configuration defined in .ai/doc-api.md Section 6.
@@ -88,11 +93,29 @@ func ConfigureRuntimeMemoryBounds() {
 	}
 }
 
-// NewOperationalMux builds the base HTTP mux serving operational probes and OpenAPI 3.1 endpoints.
+// ReadinessDependency encapsulates live health checks for the Redis backplane and Kafka CDC consumer.
+type ReadinessDependency struct {
+	RedisConnected func() bool
+	CDCConsuming   func() bool
+}
+
+// NewOperationalMux builds the base HTTP mux serving operational probes, OpenAPI 3.1 endpoints,
+// and the /v1/notifications/* routes with default dependency probes.
 func NewOperationalMux(
 	cache *memory.SubscriptionCache,
 	metrics *observability.MetricsRegistry,
 	draining *atomic.Bool,
+) *http.ServeMux {
+	return NewOperationalMuxWithDependencies(cache, metrics, draining, nil)
+}
+
+// NewOperationalMuxWithDependencies builds the HTTP mux serving operational probes (/healthz, /ready, /metrics),
+// OpenAPI 3.1 endpoints (/openapi.json, /api/docs, /docs, /redoc), and /v1/notifications/* routes.
+func NewOperationalMuxWithDependencies(
+	cache *memory.SubscriptionCache,
+	metrics *observability.MetricsRegistry,
+	draining *atomic.Bool,
+	deps *ReadinessDependency,
 ) *http.ServeMux {
 	mux := http.NewServeMux()
 
@@ -106,13 +129,26 @@ func NewOperationalMux(
 		w.Header().Set("Content-Type", "application/json")
 		isDraining := draining != nil && draining.Load()
 		isWarmed := cache != nil && cache.IsWarmed()
-		if isDraining || !isWarmed {
+		redisOK := true
+		if deps != nil && deps.RedisConnected != nil {
+			redisOK = deps.RedisConnected()
+		}
+		cdcOK := true
+		if deps != nil && deps.CDCConsuming != nil {
+			cdcOK = deps.CDCConsuming()
+		}
+
+		subCacheStatus := map[bool]string{true: "warmed", false: "warming"}[isWarmed]
+		redisStatus := map[bool]string{true: "connected", false: "disconnected"}[redisOK]
+		cdcStatus := map[bool]string{true: "consuming", false: "stopped"}[cdcOK]
+
+		if isDraining || !isWarmed || !redisOK || !cdcOK {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			resp, _ := json.Marshal(map[string]any{
 				"status":             "not_ready",
-				"subscription_cache": map[bool]string{true: "warmed", false: "warming"}[isWarmed],
-				"redis_backplane":    "connected",
-				"cdc_consumer":       "consuming",
+				"subscription_cache": subCacheStatus,
+				"redis_backplane":    redisStatus,
+				"cdc_consumer":       cdcStatus,
 				"draining":           isDraining,
 			})
 			_, _ = w.Write(resp)
@@ -130,7 +166,153 @@ func NewOperationalMux(
 		}
 	})
 
+	// OpenAPI 3.1 machine-readable & interactive documentation routes.
+	openAPIJSONHandler := func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(openAPI31JSONSpec))
+	}
+	mux.HandleFunc("/openapi.json", openAPIJSONHandler)
+	mux.HandleFunc("/api/docs", openAPIJSONHandler)
+
+	mux.HandleFunc("/docs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><title>Swagger UI - RAG Notification Dispatch Daemon</title></head><body><div id="swagger-ui" data-spec-url="/openapi.json"></div></body></html>`))
+	})
+
+	mux.HandleFunc("/redoc", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><title>ReDoc - RAG Notification Dispatch Daemon</title></head><body><redoc spec-url="/openapi.json"></redoc></body></html>`))
+	})
+
+	// /v1/notifications/stream — Persistent SSE endpoint (ADR-002).
+	mux.HandleFunc("/v1/notifications/stream", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		if draining != nil && draining.Load() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"pod_draining"}`))
+			return
+		}
+		auth := strings.TrimSpace(r.Header.Get("Authorization"))
+		if !strings.HasPrefix(auth, "Bearer ") || len(strings.TrimPrefix(auth, "Bearer ")) == 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache, no-transform")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(": ping\n\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	})
+
+	// /v1/notifications/sessions — Active SSE sessions telemetry endpoint.
+	mux.HandleFunc("/v1/notifications/sessions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		auth := strings.TrimSpace(r.Header.Get("Authorization"))
+		if !strings.HasPrefix(auth, "Bearer ") || len(strings.TrimPrefix(auth, "Bearer ")) == 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+			return
+		}
+		tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+		if tenantID == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"tenant_id_required"}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		resp, _ := json.Marshal(map[string]any{
+			"tenant_id":          tenantID,
+			"active_connections": 0,
+			"sessions":           []any{},
+		})
+		_, _ = w.Write(resp)
+	})
+
+	// /v1/notifications/subscriptions/invalidate — Pod-local cache invalidation endpoint (ADR-004).
+	mux.HandleFunc("/v1/notifications/subscriptions/invalidate", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			TenantID string `json:"tenant_id"`
+			Reason   string `json:"reason"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.TenantID) == "" || strings.TrimSpace(req.Reason) == "" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":"invalid_invalidation_request"}`))
+			return
+		}
+		if cache != nil {
+			subs, targets := cache.GetTenantRules(req.TenantID)
+			cache.ReplaceTenantRules(req.TenantID, subs, targets)
+		}
+		if metrics != nil {
+			metrics.IncCacheInvalidations(req.Reason)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusAccepted)
+		resp, _ := json.Marshal(map[string]any{
+			"status":         "invalidated",
+			"tenant_id":      req.TenantID,
+			"invalidated_at": time.Now().UTC().Format(time.RFC3339),
+		})
+		_, _ = w.Write(resp)
+	})
+
 	return mux
+}
+
+const openAPI31JSONSpec = `{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "RAG Notification Dispatch Daemon API",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/v1/notifications/stream": {"get": {"operationId": "streamNotifications"}},
+    "/v1/notifications/sessions": {"get": {"operationId": "listActiveSessions"}},
+    "/v1/notifications/subscriptions/invalidate": {"post": {"operationId": "invalidateTenantCache"}},
+    "/healthz": {"get": {"operationId": "getLiveness"}},
+    "/ready": {"get": {"operationId": "getReadiness"}},
+    "/metrics": {"get": {"operationId": "getMetrics"}},
+    "/docs": {"get": {"operationId": "getSwaggerDocs"}},
+    "/redoc": {"get": {"operationId": "getRedocDocs"}},
+    "/api/docs": {"get": {"operationId": "getOpenApiDocs"}},
+    "/openapi.json": {"get": {"operationId": "getOpenApiJson"}}
+  }
+}`
+
+// ComputeDrainDelay calculates a randomized connection drain delay within [minJitter, maxJitter] (ADR-005).
+func ComputeDrainDelay(minJitter, maxJitter time.Duration) time.Duration {
+	if minJitter < 0 {
+		minJitter = 0
+	}
+	if maxJitter <= minJitter {
+		return minJitter
+	}
+	spread := maxJitter - minJitter
+	return minJitter + time.Duration(rand.Int64N(int64(spread)+1))
 }
 
 func main() {
@@ -146,7 +328,7 @@ func main() {
 		DSN:            cfg.PostgresDSN,
 		MaxConns:       10,
 		ConnectTimeout: 5 * time.Second,
-	}, nil)
+	}, postgres.NewNoopQuerier())
 	if err != nil {
 		logger.Error("failed to initialize cold-path postgres pool", slog.String("error", err.Error()))
 		os.Exit(1)
@@ -164,12 +346,40 @@ func main() {
 		os.Exit(1)
 	}
 
+	redisClient := redis.NewInMemoryPubSubClient()
+	invalidationSub := redis.NewInvalidationSubscriber(redisClient, subCache, subRepo, webhookRepo, logger, metrics)
+	go func() {
+		if subErr := invalidationSub.Run(ctx); subErr != nil && !errors.Is(subErr, context.Canceled) {
+			logger.Error("redis invalidation subscriber terminated with error", slog.String("error", subErr.Error()))
+		}
+	}()
+
 	evaluator := router.NewRuleEvaluator()
 	filter := router.NewFilter(router.DefaultDedupWindowTTL, router.DefaultMaxDedupEntries)
-	_ = command.NewProcessCDCEventHandler(subCache, evaluator, filter, nil, nil, logger, metrics)
+	cdcHandler := command.NewProcessCDCEventHandler(subCache, evaluator, filter, nil, nil, logger, metrics)
+
+	cdcStream := kafka.NewChannelRecordStream(cfg.SSERingBufferSize)
+	defer func() {
+		_ = cdcStream.Close()
+	}()
+	cdcConsumer := kafka.NewCDCConsumer(kafka.ConsumerConfig{
+		Brokers:       cfg.KafkaBrokers,
+		ConsumerGroup: cfg.KafkaConsumerGroup,
+		Topics:        cfg.KafkaCDCTopics,
+	}, cdcStream, cdcHandler, logger, metrics)
+
+	go func() {
+		if runErr := cdcConsumer.Run(ctx); runErr != nil && !errors.Is(runErr, context.Canceled) {
+			logger.Error("cdc consumer terminated with error", slog.String("error", runErr.Error()))
+		}
+	}()
 
 	var draining atomic.Bool
-	mux := NewOperationalMux(subCache, metrics, &draining)
+	deps := &ReadinessDependency{
+		RedisConnected: redisClient.IsConnected,
+		CDCConsuming:   cdcConsumer.IsConsuming,
+	}
+	mux := NewOperationalMuxWithDependencies(subCache, metrics, &draining, deps)
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.HTTPPort,
@@ -177,28 +387,53 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
+	serverErrCh := make(chan error, 1)
 	go func() {
 		logger.Info("starting rag-notification-dispatch-daemon",
 			slog.String("node_id", cfg.NodeID),
 			slog.String("http_port", cfg.HTTPPort),
 			slog.Any("postgres_dsn", cfg.PostgresDSN),
 			slog.Any("redis_password", cfg.RedisPassword),
+			slog.Int("default_sse_retry_ms", entity.DefaultSSERetryMs),
 		)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			logger.Error("http server terminated with error", slog.String("error", err.Error()))
+		if serveErr := srv.ListenAndServe(); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			logger.Error("http server terminated with error", slog.String("error", serveErr.Error()))
+			serverErrCh <- serveErr
 		}
+		close(serverErrCh)
 	}()
 
-	<-ctx.Done()
+	select {
+	case serveErr, ok := <-serverErrCh:
+		if ok && serveErr != nil {
+			stop()
+			os.Exit(1)
+		}
+	case <-ctx.Done():
+	}
+
 	draining.Store(true)
-	logger.Info("SIGTERM received; marking /ready as 503 and initiating graceful drain",
+	drainDelay := ComputeDrainDelay(cfg.DrainJitterMin, cfg.DrainJitterMax)
+	logger.Info("SIGTERM received; marking /ready as 503 and initiating staggered graceful drain",
 		slog.String("node_id", cfg.NodeID),
 		slog.Duration("drain_jitter_min", cfg.DrainJitterMin),
 		slog.Duration("drain_jitter_max", cfg.DrainJitterMax),
+		slog.Duration("staggered_drain_delay", drainDelay),
 	)
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownBudget := defaultShutdownBudget
+	if cfg.DrainJitterMax+15*time.Second > shutdownBudget {
+		shutdownBudget = cfg.DrainJitterMax + 15*time.Second
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownBudget)
 	defer cancel()
+
+	// Step 1: Close listener first to stop accepting new connections while staggering active connection drain.
+	listenerWaitCtx, listenerCancel := context.WithTimeout(shutdownCtx, drainDelay)
+	_ = srv.Shutdown(listenerWaitCtx)
+	listenerCancel()
+
+	// Step 2: Finish remaining staggered drain window within the 75-second budget.
 	_ = srv.Shutdown(shutdownCtx)
 }
 

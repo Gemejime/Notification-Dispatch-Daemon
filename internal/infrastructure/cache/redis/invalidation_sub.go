@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/domain/entity"
@@ -39,6 +40,59 @@ type PubSubSubscription interface {
 type PubSubClient interface {
 	Subscribe(ctx context.Context, channel string) (PubSubSubscription, error)
 	Publish(ctx context.Context, channel string, payload []byte) error
+}
+
+// InMemoryPubSubClient provides an in-process PubSubClient implementation with connection health reporting.
+type InMemoryPubSubClient struct {
+	ch        chan []byte
+	connected atomic.Bool
+}
+
+// NewInMemoryPubSubClient creates a connected InMemoryPubSubClient.
+func NewInMemoryPubSubClient() *InMemoryPubSubClient {
+	c := &InMemoryPubSubClient{
+		ch: make(chan []byte, 64),
+	}
+	c.connected.Store(true)
+	return c
+}
+
+// Subscribe returns an active subscription reading from the in-memory pub/sub channel.
+func (c *InMemoryPubSubClient) Subscribe(_ context.Context, _ string) (PubSubSubscription, error) {
+	if !c.connected.Load() {
+		return nil, errors.New("redis backplane disconnected")
+	}
+	return c, nil
+}
+
+// Publish sends a payload to the in-memory pub/sub channel.
+func (c *InMemoryPubSubClient) Publish(_ context.Context, _ string, payload []byte) error {
+	if !c.connected.Load() {
+		return errors.New("redis backplane disconnected")
+	}
+	cp := make([]byte, len(payload))
+	copy(cp, payload)
+	select {
+	case c.ch <- cp:
+	default:
+	}
+	return nil
+}
+
+// Messages returns the receive channel for subscribed messages.
+func (c *InMemoryPubSubClient) Messages() <-chan []byte { return c.ch }
+
+// Close closes the subscription.
+func (c *InMemoryPubSubClient) Close() error { return nil }
+
+// IsConnected reports whether the Redis backplane client is connected and healthy.
+func (c *InMemoryPubSubClient) IsConnected() bool {
+	return c != nil && c.connected.Load()
+}
+
+// SetConnected updates the connection health state of the Redis backplane client.
+func (c *InMemoryPubSubClient) SetConnected(connected bool) {
+	c.connected.Store(connected)
 }
 
 // InvalidationSubscriber listens on `tenant.config.updated` and performs asynchronous

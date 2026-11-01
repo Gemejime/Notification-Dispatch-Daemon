@@ -41,6 +41,47 @@ type RecordStream interface {
 	Close() error
 }
 
+// ChannelRecordStream provides an in-process RecordStream backed by a buffered Go channel
+// that observes context cancellation, suitable for standalone daemon startup and local testing.
+type ChannelRecordStream struct {
+	ch     chan CDCRecord
+	closed atomic.Bool
+}
+
+// NewChannelRecordStream initializes a buffered ChannelRecordStream.
+func NewChannelRecordStream(bufferSize int) *ChannelRecordStream {
+	if bufferSize <= 0 {
+		bufferSize = 256
+	}
+	return &ChannelRecordStream{
+		ch: make(chan CDCRecord, bufferSize),
+	}
+}
+
+// Fetch blocks until a CDCRecord is available or ctx is canceled.
+func (s *ChannelRecordStream) Fetch(ctx context.Context) (CDCRecord, error) {
+	select {
+	case <-ctx.Done():
+		return CDCRecord{}, ctx.Err()
+	case rec, ok := <-s.ch:
+		if !ok {
+			return CDCRecord{}, context.Canceled
+		}
+		return rec, nil
+	}
+}
+
+// CommitOffset records the committed offset watermark on the stream.
+func (s *ChannelRecordStream) CommitOffset(_ context.Context, _ string, _ int, _ int64) error {
+	return nil
+}
+
+// Close marks the stream as closed.
+func (s *ChannelRecordStream) Close() error {
+	s.closed.Store(true)
+	return nil
+}
+
 // ConsumerConfig holds the 12-Factor configuration for the CDC consumer group.
 type ConsumerConfig struct {
 	Brokers       []string
