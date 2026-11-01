@@ -29,6 +29,7 @@ import (
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/observability"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/persistence/postgres"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/queue/kafka"
+	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/queue/publisher"
 	transporthttp "github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/transport/http"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/transport/http/middleware"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/transport/hub"
@@ -351,6 +352,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	eventJournalRepo := postgres.NewEventJournalRepo(pgPool)
+	redisCluster := redis.NewInMemoryRedisClusterClient()
+	presenceRegistry := redis.NewPresenceRegistry(
+		redis.PresenceRegistryConfig{
+			NodeID:       cfg.NodeID,
+			PresenceTTL:  45 * time.Second,
+			ReplayMaxLen: 1000,
+			ReplayTTL:    3600 * time.Second,
+		},
+		redisCluster,
+		logger,
+		metrics,
+	)
+
+	taskBroker := publisher.NewInMemoryTaskQueueBroker()
+	taskPublisher := publisher.NewTaskQueuePublisher(cfg.WebhookQueueStream, taskBroker, logger, metrics)
+
 	redisClient := redis.NewInMemoryPubSubClient()
 	invalidationSub := redis.NewInvalidationSubscriber(redisClient, subCache, subRepo, webhookRepo, logger, metrics)
 	go func() {
@@ -369,8 +387,28 @@ func main() {
 	)
 	connectionHub.StartSlowConsumerSweeper(ctx, 1*time.Second)
 
-	registerCmd := command.NewRegisterConnectionHandler(connectionHub, nil, 45*time.Second)
-	terminateCmd := command.NewTerminateConnectionHandler(connectionHub, nil)
+	targetedRouter := hub.NewTargetedRouter(
+		hub.TargetedRouterConfig{LocalNodeID: cfg.NodeID},
+		connectionHub,
+		presenceRegistry,
+		presenceRegistry,
+		eventJournalRepo,
+		redisCluster,
+		logger,
+		metrics,
+	)
+	if startErr := targetedRouter.Start(ctx); startErr != nil {
+		logger.Error("failed to start targeted router subscriber", slog.String("error", startErr.Error()))
+		os.Exit(1)
+	}
+	defer func() {
+		_ = targetedRouter.Close()
+	}()
+
+	registerCmd := command.NewRegisterConnectionHandler(connectionHub, presenceRegistry, 45*time.Second)
+	terminateCmd := command.NewTerminateConnectionHandler(connectionHub, presenceRegistry)
+
+	replayHandler := query.NewFetchReplayEventsHandler(presenceRegistry, eventJournalRepo, 50, 100, logger, metrics)
 
 	streamHandler := sse.NewStreamHandler(
 		sse.StreamHandlerConfig{
@@ -383,8 +421,8 @@ func main() {
 		connectionHub,
 		registerCmd,
 		terminateCmd,
-		nil,
-		nil,
+		presenceRegistry,
+		replayHandler,
 		metrics,
 		logger,
 	)
@@ -394,7 +432,7 @@ func main() {
 
 	evaluator := router.NewRuleEvaluator()
 	filter := router.NewFilter(router.DefaultDedupWindowTTL, router.DefaultMaxDedupEntries)
-	cdcHandler := command.NewProcessCDCEventHandler(subCache, evaluator, filter, connectionHub, nil, logger, metrics)
+	cdcHandler := command.NewProcessCDCEventHandler(subCache, evaluator, filter, targetedRouter, taskPublisher, logger, metrics)
 
 	cdcStream := kafka.NewChannelRecordStream(cfg.SSERingBufferSize)
 	defer func() {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/application/command"
+	"github.com/gemejime/rag-notification-dispatch-daemon/internal/application/query"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/domain/entity"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/observability"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/transport/hub"
@@ -186,34 +187,48 @@ func (h *StreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 	}()
 
-	// 6. Write ADR-002 response headers and immediate ping keepalive.
+	// 6. Last-Event-ID replay backfill with rate limiting check (Runbook 2, ADR-004).
+	var replayed []entity.NotificationEvent
+	if lastEventID != "" && h.replayStreamer != nil {
+		var rErr error
+		replayed, rErr = h.replayStreamer.FetchReplayEvents(streamCtx, tenantID, lastEventID, h.cfg.ReplayMaxEvents)
+		if rErr != nil && !errors.Is(rErr, context.Canceled) {
+			if errors.Is(rErr, query.ErrBackfillRateLimited) {
+				h.logger.Warn("reconnection backfill rate limited",
+					slog.String("connection_id", connectionID),
+					slog.String("tenant_id", tenantID),
+				)
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Retry-After", "5")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = w.Write([]byte(`{"error":"backfill_rate_limited"}`))
+				return
+			}
+			h.logger.Warn("failed to fetch replay events",
+				slog.String("connection_id", connectionID),
+				slog.String("last_event_id", lastEventID),
+				slog.String("error", rErr.Error()),
+			)
+		}
+	}
+
+	// 7. Write ADR-002 response headers and immediate ping keepalive.
 	flusher.WriteHeaders()
 	if err := flusher.WritePing(); err != nil {
 		h.logger.Debug("failed to write initial ping, client aborted", slog.String("connection_id", connectionID))
 		return
 	}
 
-	// 7. Last-Event-ID replay backfill with high-watermark tracking.
+	// 8. Stream replayed frames with high-watermark tracking.
 	var watermarkEventID string
-	if lastEventID != "" && h.replayStreamer != nil {
-		replayed, rErr := h.replayStreamer.FetchReplayEvents(streamCtx, tenantID, lastEventID, h.cfg.ReplayMaxEvents)
-		if rErr != nil && !errors.Is(rErr, context.Canceled) {
-			h.logger.Warn("failed to fetch replay events",
-				slog.String("connection_id", connectionID),
-				slog.String("last_event_id", lastEventID),
-				slog.String("error", rErr.Error()),
-			)
-		} else {
-			for _, ev := range replayed {
-				if conn.AcceptsEvent(ev) {
-					frame := ev.FormatSSEFrame(h.cfg.DefaultRetryMs)
-					if wErr := flusher.WriteFrame(frame); wErr != nil {
-						h.logger.Debug("client disconnected during replay backfill", slog.String("connection_id", connectionID))
-						return
-					}
-					watermarkEventID = ev.EventID
-				}
+	for _, ev := range replayed {
+		if conn.AcceptsEvent(ev) {
+			frame := ev.FormatSSEFrame(h.cfg.DefaultRetryMs)
+			if wErr := flusher.WriteFrame(frame); wErr != nil {
+				h.logger.Debug("client disconnected during replay backfill", slog.String("connection_id", connectionID))
+				return
 			}
+			watermarkEventID = ev.EventID
 		}
 	}
 

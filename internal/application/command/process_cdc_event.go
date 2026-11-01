@@ -52,6 +52,7 @@ type ProcessCDCEventHandler struct {
 	filter          *router.Filter
 	sseDispatcher   NodeEventDispatcher
 	webhookEnqueuer WebhookTaskEnqueuer
+	webhookHandler  *DispatchWebhookTaskHandler
 	logger          *slog.Logger
 	metrics         *observability.MetricsRegistry
 	nowFn           func() time.Time
@@ -85,6 +86,7 @@ func NewProcessCDCEventHandler(
 		filter:          filter,
 		sseDispatcher:   sseDispatcher,
 		webhookEnqueuer: webhookEnqueuer,
+		webhookHandler:  NewDispatchWebhookTaskHandler(webhookEnqueuer, logger, metrics),
 		logger:          logger,
 		metrics:         metrics,
 		nowFn:           func() time.Time { return time.Now().UTC() },
@@ -187,36 +189,14 @@ func (h *ProcessCDCEventHandler) Handle(
 
 	// 5. Asynchronous webhook task enqueueing (P99 <= 15ms, ADR-001).
 	if decision.DeliverWebhook && len(decision.MatchedWebhookTargets) > 0 {
-		for _, target := range decision.MatchedWebhookTargets {
-			task := &notificationv1.WebhookDeliveryTask{
-				TaskId:              entity.DeterministicTaskID(event.TenantID, event.EventID, target.TargetID),
-				EventId:             event.EventID,
-				TenantId:            event.TenantID,
-				TargetId:            target.TargetID,
-				TargetUrl:           target.TargetURL,
-				SecretRef:           target.SecretRef,
-				SignatureHeaderName: target.EffectiveSignatureHeader(),
-				TimestampUnixSec:    now.Unix(),
-				EventType:           event.EventType,
-				PayloadJson:         event.PayloadJSON,
-				TraceId:             event.TraceID,
-			}
-			if err := task.Validate(); err != nil {
-				h.metrics.IncWebhookEnqueued(event.TenantID, "validation_error")
-				return res, fmt.Errorf("validate webhook delivery task: %w", err)
-			}
-			if h.webhookEnqueuer != nil {
-				enqCtx, cancel := context.WithTimeout(ctx, WebhookEnqueueTimeout)
-				err := h.webhookEnqueuer.EnqueueWebhookTask(enqCtx, task)
-				cancel()
-				if err != nil {
-					h.metrics.IncWebhookEnqueued(event.TenantID, "enqueue_error")
-					return res, fmt.Errorf("enqueue webhook task %s: %w", task.TaskId, err)
-				}
-			}
-			res.WebhooksEnqueued++
-			h.metrics.IncWebhookEnqueued(event.TenantID, "enqueued")
+		whRes, err := h.webhookHandler.Handle(ctx, DispatchWebhookTaskCommand{
+			Event:   event,
+			Targets: decision.MatchedWebhookTargets,
+		})
+		if err != nil {
+			return res, err
 		}
+		res.WebhooksEnqueued = whRes.TasksEnqueued
 	}
 
 	h.metrics.IncEventsProcessed(event.EventType, "dispatched")
