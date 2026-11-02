@@ -26,6 +26,7 @@ import (
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/domain/router"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/cache/memory"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/cache/redis"
+	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/config"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/observability"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/persistence/postgres"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/queue/kafka"
@@ -63,15 +64,18 @@ type Config struct {
 	LogLevel             slog.Level
 }
 
-// LoadConfig loads 12-Factor configuration from environment variables with canonical defaults.
+// LoadConfig loads 12-Factor configuration from .env and environment variables with canonical defaults.
 func LoadConfig() Config {
+	_ = config.LoadEnv()
+	ConfigureRuntimeMemoryBounds()
+
 	hostname, err := os.Hostname()
 	if err != nil || hostname == "" {
 		hostname = "node-local-0"
 	}
 	return Config{
 		NodeID:               envOrDefault("NODE_ID", hostname),
-		HTTPPort:             envOrDefault("HTTP_PORT", "8080"),
+		HTTPPort:             envOrDefault("HTTP_PORT", envOrDefault("PORT", "8080")),
 		PostgresDSN:          observability.NewSecretString(os.Getenv("POSTGRES_DSN")),
 		RedisAddrs:           splitCSV(envOrDefault("REDIS_ADDRS", "localhost:6379")),
 		RedisPassword:        observability.NewSecretString(os.Getenv("REDIS_PASSWORD")),
@@ -89,14 +93,14 @@ func LoadConfig() Config {
 	}
 }
 
-// ConfigureRuntimeMemoryBounds enforces GOMEMLIMIT=1800MiB and GOGC=80 when not already overridden.
+// ConfigureRuntimeMemoryBounds enforces GOMEMLIMIT (default 1800MiB) and GOGC (default 80),
+// dynamically applying parsed overrides from environment / .env.
 func ConfigureRuntimeMemoryBounds() {
-	if os.Getenv("GOMEMLIMIT") == "" {
-		debug.SetMemoryLimit(defaultMemoryLimitBytes)
-	}
-	if os.Getenv("GOGC") == "" {
-		debug.SetGCPercent(defaultGCPercent)
-	}
+	memLimit := config.ParseMemoryLimitBytes(os.Getenv("GOMEMLIMIT"), defaultMemoryLimitBytes)
+	debug.SetMemoryLimit(memLimit)
+
+	gcPercent := config.ParseGCPercent(os.Getenv("GOGC"), defaultGCPercent)
+	debug.SetGCPercent(gcPercent)
 }
 
 // ReadinessDependency encapsulates live health checks for the Redis backplane and Kafka CDC consumer.
@@ -322,8 +326,8 @@ func ComputeDrainDelay(minJitter, maxJitter time.Duration) time.Duration {
 }
 
 func main() {
-	ConfigureRuntimeMemoryBounds()
 	cfg := LoadConfig()
+	ConfigureRuntimeMemoryBounds()
 	logger := observability.NewSecuredLogger(os.Stdout, cfg.LogLevel)
 	metrics := observability.NewMetricsRegistry()
 
