@@ -501,12 +501,15 @@ CREATE INDEX IF NOT EXISTS idx_event_journal_tenant_occurred ON notification_eve
 
 ## 6. 12-Factor Environment Configuration Matrix
 
+The daemon automatically reads `.env` on startup via its zero-dependency dotenv loader, supporting local `.env` and `.env.example` templates, custom file paths via `ENV_FILE`, and dynamic OS override toggles via `DOTENV_OVERRIDE`. Runtime memory limits (`GOMEMLIMIT`) and GC targets (`GOGC`) parsed from `.env` are dynamically applied to the Go runtime.
+
 | Environment Variable | Default | Required | Description |
 | :--- | :--- | :--- | :--- |
-| `GOMEMLIMIT` | `1800MiB` | Yes | Go runtime soft memory limit inside `2GiB` pod ceiling |
-| `GOGC` | `80` | Yes | Go garbage collector target percentage to prevent OOM spikes |
+| `GOMEMLIMIT` | `1800MiB` | Yes | Go runtime soft memory limit inside `2GiB` pod ceiling (supports `1800MiB`, `2GiB`, `1000MB`, or raw bytes) |
+| `GOGC` | `80` | Yes | Go garbage collector target percentage to prevent OOM spikes (`80`, `100`, or `off`) |
 | `NODE_ID` | Pod hostname | Yes | Unique daemon instance identifier for `pod.{node_id}.events` targeted routing |
 | `HTTP_PORT` | `8080` | Yes | HTTP/2 SSE & REST listening port |
+| `PORT` | `8080` | No | Alternate listening port fallback (compatible with Cloud Run / PaaS container platforms) |
 | `POSTGRES_DSN` | — | Yes (Secret) | PgBouncer PostgreSQL 16+ connection string (strictly cold-path only; redacted in logs) |
 | `REDIS_ADDRS` | — | Yes | Comma-separated Redis 7.2 Cluster nodes |
 | `REDIS_PASSWORD` | — | No (Secret) | Redis authentication secret (strictly redacted in logs) |
@@ -521,3 +524,5 @@ CREATE INDEX IF NOT EXISTS idx_event_journal_tenant_occurred ON notification_eve
 | `DRAIN_JITTER_MAX` | `60s` | Yes | Maximum SIGTERM staggered drain window (`terminationGracePeriodSeconds: 75`) |
 | `JWT_PUBLIC_KEY_PEM` | — | Yes (Secret) | Public key / JWKS reference for verifying SSE channel bearer tokens |
 | `LOG_LEVEL` | `INFO` | No | `slog` JSON logging threshold (`DEBUG`, `INFO`, `WARN`, `ERROR`) |
+| `ENV_FILE` | `.env` | No | Optional explicit filesystem path to .env configuration file |
+| `DOTENV_OVERRIDE` | `true` | No | Whether values defined in .env override pre-existing OS environment variables (`true`/`false`) |

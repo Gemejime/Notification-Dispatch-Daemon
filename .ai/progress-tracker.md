@@ -26,6 +26,18 @@
 
 ## Completed Units
 
+- **Environment Configuration Engine & .env Matrix Synchronization**:
+  - **Dynamic .env Discovery & Parser (`internal/infrastructure/config/env.go`)**:
+    - Zero-external-dependency standard library parser for `.env` files supporting key-value pairs, `export ` prefixes, double/single quotes, escaped character expansions (`\n`, `\t`, `\r`, `\"`, `\\`), inline comments (`#`), and blank lines.
+    - Upward directory traversal (`FindEnvFile`) discovering `.env` from execution working directory up to repository boundary (`go.mod`), with explicit override support via `ENV_FILE`.
+    - Dynamic Go runtime bounds parser (`ParseMemoryLimitBytes`, `ParseGCPercent`) mapping human-readable suffixes (`MiB`, `GiB`, `KiB`, `MB`, `GB`, `off`) to runtime `debug.SetMemoryLimit` and `debug.SetGCPercent`.
+    - Integrated automatic `.env` discovery inside `cmd/notification-daemon/main.go` on application startup (`LoadConfig()`), with fallback to `PORT` and canonical defaults.
+  - **Comprehensive .env.example Template (`.env.example`)**:
+    - Authored `.env.example` documenting all 21 12-Factor variables across runtime limits, identity, PostgreSQL, Redis, Kafka, Webhook queues, SSE engine, draining jitter, JWT authentication, and logging thresholds.
+  - **Verification Test Suites (`internal/infrastructure/config/env_test.go`, `cmd/notification-daemon/env_affects_project_test.go`)**:
+    - Tested parsing invariants, memory/GC parsing, and file loading with/without override.
+    - Verified `TestEnvFileDirectlyAffectsProject`: modifying values in `.env` dynamically alters all daemon configuration fields, runtime memory bounds, and GC settings upon reload.
+
 - **Phase 4 Implementation — Resilience, Chaos & Production Rollout**:
   - **High-Density Memory Soak & Benchmarking (`test/performance/high_density_soak_test.go`)**:
     - Validated 20,000 concurrent active client streams on a single node (equivalent to 100,000 cluster-wide across 5 pods).
