@@ -142,3 +142,4 @@ GOGC=100
 		t.Errorf("modified GOGC: got %d, want 100", parsedGC)
 	}
 }
+
