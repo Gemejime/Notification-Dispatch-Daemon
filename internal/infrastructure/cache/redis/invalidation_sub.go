@@ -66,7 +66,7 @@ func (c *InMemoryPubSubClient) Subscribe(_ context.Context, _ string) (PubSubSub
 }
 
 // Publish sends a payload to the in-memory pub/sub channel.
-func (c *InMemoryPubSubClient) Publish(_ context.Context, _ string, payload []byte) error {
+func (c *InMemoryPubSubClient) Publish(ctx context.Context, _ string, payload []byte) error {
 	if !c.connected.Load() {
 		return errors.New("redis backplane disconnected")
 	}
@@ -74,9 +74,10 @@ func (c *InMemoryPubSubClient) Publish(_ context.Context, _ string, payload []by
 	copy(cp, payload)
 	select {
 	case c.ch <- cp:
-	default:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	return nil
 }
 
 // Messages returns the receive channel for subscribed messages.

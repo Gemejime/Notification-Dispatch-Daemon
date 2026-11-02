@@ -4,6 +4,7 @@ package query
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -131,8 +132,10 @@ func (h *FetchReplayEventsHandler) FetchReplayEvents(
 	lastEventID string,
 	limit int,
 ) ([]entity.NotificationEvent, error) {
+	userID, _ := ctx.Value(entity.ContextKeyUserID).(string)
 	res, err := h.Handle(ctx, FetchReplayEventsQuery{
 		TenantID:    tenantID,
+		UserID:      userID,
 		LastEventID: lastEventID,
 		Limit:       limit,
 	})
@@ -153,6 +156,11 @@ func (h *FetchReplayEventsHandler) Handle(
 	if q.Limit <= 0 {
 		q.Limit = 100
 	}
+	if q.UserID == "" {
+		if u, ok := ctx.Value(entity.ContextKeyUserID).(string); ok {
+			q.UserID = u
+		}
+	}
 
 	// 1. Enforce per-tenant backfill rate limiting (Runbook 2, protects Redis CPU < 60%)
 	if !h.AllowTenantBackfill(q.TenantID) {
@@ -164,31 +172,78 @@ func (h *FetchReplayEventsHandler) Handle(
 	}
 
 	var events []entity.NotificationEvent
+	var redisErr error
+	hasRedis := h.replayStore != nil
+	hasJournal := h.journalRepo != nil && q.LastEventID != ""
 
 	// 2. Query bounded Redis Stream replay buffer: rag:notify:replay:{tenant_id}
-	if h.replayStore != nil {
-		streamEvents, err := h.replayStore.FetchReplayEvents(ctx, q.TenantID, q.LastEventID, q.Limit)
-		if err != nil {
-			h.logger.Warn("redis stream replay fetch error",
-				slog.String("tenant_id", q.TenantID),
-				slog.String("error", err.Error()),
-			)
-		} else {
-			events = streamEvents
+	cursor := q.LastEventID
+	if hasRedis {
+		for len(events) < q.Limit {
+			streamEvents, err := h.replayStore.FetchReplayEvents(ctx, q.TenantID, cursor, q.Limit)
+			if err != nil {
+				redisErr = err
+				h.logger.Warn("redis stream replay fetch error",
+					slog.String("tenant_id", q.TenantID),
+					slog.String("error", err.Error()),
+				)
+				break
+			}
+			if len(streamEvents) == 0 {
+				break
+			}
+			for _, ev := range streamEvents {
+				cursor = ev.EventID
+				if q.UserID == "" || ev.UserID == "" || ev.UserID == q.UserID {
+					events = append(events, ev)
+					if len(events) >= q.Limit {
+						break
+					}
+				}
+			}
 		}
 	}
 
 	// 3. Fall back to PostgreSQL event journal if Redis stream has no events or lastEventID predates stream window
-	if len(events) == 0 && h.journalRepo != nil && q.LastEventID != "" {
-		journalEvents, jErr := h.journalRepo.FetchReplayAfter(ctx, q.TenantID, q.LastEventID, q.Limit)
-		if jErr != nil {
-			h.logger.Warn("cold journal replay fetch error",
-				slog.String("tenant_id", q.TenantID),
-				slog.String("last_event_id", q.LastEventID),
-				slog.String("error", jErr.Error()),
-			)
-		} else {
-			events = journalEvents
+	var journalErr error
+	if len(events) < q.Limit && hasJournal {
+		jCursor := cursor
+		for len(events) < q.Limit {
+			journalEvents, jErr := h.journalRepo.FetchReplayAfter(ctx, q.TenantID, jCursor, q.Limit)
+			if jErr != nil {
+				journalErr = jErr
+				h.logger.Warn("cold journal replay fetch error",
+					slog.String("tenant_id", q.TenantID),
+					slog.String("last_event_id", jCursor),
+					slog.String("error", jErr.Error()),
+				)
+				break
+			}
+			if len(journalEvents) == 0 {
+				break
+			}
+			for _, ev := range journalEvents {
+				jCursor = ev.EventID
+				if q.UserID == "" || ev.UserID == "" || ev.UserID == q.UserID {
+					events = append(events, ev)
+					if len(events) >= q.Limit {
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// If every eligible replay source failed, return error
+	if len(events) == 0 {
+		if hasRedis && hasJournal {
+			if redisErr != nil && journalErr != nil {
+				return FetchReplayEventsResult{}, fmt.Errorf("all replay sources failed: redis: %v, journal: %w", redisErr, journalErr)
+			}
+		} else if hasRedis && redisErr != nil {
+			return FetchReplayEventsResult{}, fmt.Errorf("redis replay source failed: %w", redisErr)
+		} else if hasJournal && journalErr != nil {
+			return FetchReplayEventsResult{}, fmt.Errorf("journal replay source failed: %w", journalErr)
 		}
 	}
 

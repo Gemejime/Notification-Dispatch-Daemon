@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -25,8 +26,14 @@ ON CONFLICT (event_id) DO NOTHING`
 SELECT event_id, tenant_id, user_id, source_service, event_type,
        severity, is_terminal, payload_json, occurred_at
 FROM notification_event_journal
-WHERE tenant_id = $1 AND event_id > $2
-ORDER BY event_id ASC
+WHERE tenant_id = $1
+  AND ($2 = '' OR (occurred_at, event_id) > (
+      SELECT COALESCE(occurred_at, '1970-01-01'::timestamptz), event_id
+      FROM notification_event_journal
+      WHERE event_id = $2 AND tenant_id = $1
+      LIMIT 1
+  ))
+ORDER BY occurred_at ASC, event_id ASC
 LIMIT $3`
 )
 
@@ -155,12 +162,15 @@ func NewInMemoryEventJournalRepo() *InMemoryEventJournalRepo {
 	}
 }
 
-// AppendEvent stores the event in the in-memory journal.
+// AppendEvent stores the event in the in-memory journal, ordered by EventID ascending.
 func (m *InMemoryEventJournalRepo) AppendEvent(_ context.Context, event entity.NotificationEvent) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	list := m.events[event.TenantID]
 	list = append(list, event)
+	sort.Slice(list, func(i, j int) bool {
+		return list[i].EventID < list[j].EventID
+	})
 	m.events[event.TenantID] = list
 	return nil
 }
@@ -179,16 +189,40 @@ func (m *InMemoryEventJournalRepo) FetchReplayAfter(
 		return nil, nil
 	}
 
-	var res []entity.NotificationEvent
-	for _, ev := range list {
-		if lastEventID != "" && ev.EventID <= lastEventID {
-			continue
+	startIdx := 0
+	if lastEventID != "" {
+		found := false
+		for i, ev := range list {
+			if ev.EventID == lastEventID {
+				startIdx = i + 1
+				found = true
+				break
+			}
 		}
-		res = append(res, ev)
-		if limit > 0 && len(res) >= limit {
-			break
+		if !found {
+			for i, ev := range list {
+				if ev.EventID > lastEventID {
+					startIdx = i
+					found = true
+					break
+				}
+			}
+			if !found {
+				return nil, nil
+			}
 		}
 	}
 
+	if startIdx >= len(list) {
+		return nil, nil
+	}
+
+	sub := list[startIdx:]
+	if limit > 0 && len(sub) > limit {
+		sub = sub[:limit]
+	}
+
+	res := make([]entity.NotificationEvent, len(sub))
+	copy(res, sub)
 	return res, nil
 }

@@ -57,6 +57,7 @@ type InMemoryRedisClusterClient struct {
 	sets        map[string]map[string]struct{}
 	streams     map[string][]StreamMessage
 	channels    map[string][]chan []byte
+	expires     map[string]time.Time
 	streamSeq   int64
 	isConn      bool
 	streamLimit int
@@ -69,9 +70,21 @@ func NewInMemoryRedisClusterClient() *InMemoryRedisClusterClient {
 		sets:        make(map[string]map[string]struct{}),
 		streams:     make(map[string][]StreamMessage),
 		channels:    make(map[string][]chan []byte),
+		expires:     make(map[string]time.Time),
 		isConn:      true,
 		streamLimit: 1000,
 	}
+}
+
+func (m *InMemoryRedisClusterClient) isExpiredLocked(key string) bool {
+	if exp, ok := m.expires[key]; ok && time.Now().After(exp) {
+		delete(m.expires, key)
+		delete(m.hashes, key)
+		delete(m.sets, key)
+		delete(m.streams, key)
+		return true
+	}
+	return false
 }
 
 func (m *InMemoryRedisClusterClient) HSet(_ context.Context, key, field, value string) error {
@@ -80,6 +93,7 @@ func (m *InMemoryRedisClusterClient) HSet(_ context.Context, key, field, value s
 	if !m.isConn {
 		return errors.New("redis cluster client disconnected")
 	}
+	m.isExpiredLocked(key)
 	h, ok := m.hashes[key]
 	if !ok {
 		h = make(map[string]string)
@@ -95,6 +109,9 @@ func (m *InMemoryRedisClusterClient) HDel(_ context.Context, key string, fields 
 	if !m.isConn {
 		return errors.New("redis cluster client disconnected")
 	}
+	if m.isExpiredLocked(key) {
+		return nil
+	}
 	h, ok := m.hashes[key]
 	if !ok {
 		return nil
@@ -104,6 +121,7 @@ func (m *InMemoryRedisClusterClient) HDel(_ context.Context, key string, fields 
 	}
 	if len(h) == 0 {
 		delete(m.hashes, key)
+		delete(m.expires, key)
 	}
 	return nil
 }
@@ -113,6 +131,9 @@ func (m *InMemoryRedisClusterClient) HGetAll(_ context.Context, key string) (map
 	defer m.mu.RUnlock()
 	if !m.isConn {
 		return nil, errors.New("redis cluster client disconnected")
+	}
+	if exp, ok := m.expires[key]; ok && time.Now().After(exp) {
+		return make(map[string]string), nil
 	}
 	h, ok := m.hashes[key]
 	if !ok {
@@ -131,6 +152,7 @@ func (m *InMemoryRedisClusterClient) SAdd(_ context.Context, key string, members
 	if !m.isConn {
 		return errors.New("redis cluster client disconnected")
 	}
+	m.isExpiredLocked(key)
 	s, ok := m.sets[key]
 	if !ok {
 		s = make(map[string]struct{})
@@ -148,6 +170,9 @@ func (m *InMemoryRedisClusterClient) SRem(_ context.Context, key string, members
 	if !m.isConn {
 		return errors.New("redis cluster client disconnected")
 	}
+	if m.isExpiredLocked(key) {
+		return nil
+	}
 	s, ok := m.sets[key]
 	if !ok {
 		return nil
@@ -157,6 +182,7 @@ func (m *InMemoryRedisClusterClient) SRem(_ context.Context, key string, members
 	}
 	if len(s) == 0 {
 		delete(m.sets, key)
+		delete(m.expires, key)
 	}
 	return nil
 }
@@ -166,6 +192,9 @@ func (m *InMemoryRedisClusterClient) SMembers(_ context.Context, key string) ([]
 	defer m.mu.RUnlock()
 	if !m.isConn {
 		return nil, errors.New("redis cluster client disconnected")
+	}
+	if exp, ok := m.expires[key]; ok && time.Now().After(exp) {
+		return nil, nil
 	}
 	s, ok := m.sets[key]
 	if !ok {
@@ -179,11 +208,28 @@ func (m *InMemoryRedisClusterClient) SMembers(_ context.Context, key string) ([]
 	return members, nil
 }
 
-func (m *InMemoryRedisClusterClient) Expire(_ context.Context, _ string, _ time.Duration) error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+func (m *InMemoryRedisClusterClient) Expire(_ context.Context, key string, ttl time.Duration) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if !m.isConn {
 		return errors.New("redis cluster client disconnected")
+	}
+	if m.isExpiredLocked(key) {
+		return nil
+	}
+	_, hasHash := m.hashes[key]
+	_, hasSet := m.sets[key]
+	_, hasStream := m.streams[key]
+	if !hasHash && !hasSet && !hasStream {
+		return nil
+	}
+	if ttl > 0 {
+		m.expires[key] = time.Now().Add(ttl)
+	} else {
+		delete(m.hashes, key)
+		delete(m.sets, key)
+		delete(m.streams, key)
+		delete(m.expires, key)
 	}
 	return nil
 }
@@ -194,6 +240,7 @@ func (m *InMemoryRedisClusterClient) XAdd(_ context.Context, stream string, maxL
 	if !m.isConn {
 		return "", errors.New("redis cluster client disconnected")
 	}
+	m.isExpiredLocked(stream)
 	m.streamSeq++
 	id := fmt.Sprintf("%d-0", time.Now().UnixMilli()*1000+m.streamSeq)
 	copiedValues := make(map[string]any, len(values))
@@ -218,6 +265,9 @@ func (m *InMemoryRedisClusterClient) XRange(_ context.Context, stream, start, st
 	defer m.mu.RUnlock()
 	if !m.isConn {
 		return nil, errors.New("redis cluster client disconnected")
+	}
+	if exp, ok := m.expires[stream]; ok && time.Now().After(exp) {
+		return nil, nil
 	}
 	st, ok := m.streams[stream]
 	if !ok {
@@ -338,6 +388,12 @@ type PresenceRegistry struct {
 	metrics            *observability.MetricsRegistry
 	mu                 sync.RWMutex
 	localTenantSockets map[string]int // tenant_id -> local socket count on this node
+	tenantLocks        sync.Map       // tenant_id -> *sync.Mutex
+}
+
+func (r *PresenceRegistry) getTenantLock(tenantID string) *sync.Mutex {
+	v, _ := r.tenantLocks.LoadOrStore(tenantID, &sync.Mutex{})
+	return v.(*sync.Mutex)
 }
 
 // NewPresenceRegistry creates a new PresenceRegistry backed by RedisClusterClient.
@@ -409,9 +465,17 @@ func (r *PresenceRegistry) RegisterPresence(
 		_ = r.client.Expire(ctx, uKey, ttl)
 	}
 
-	// 2. Add node_id to tenant_nodes set
+	// 2. Add node_id to tenant_nodes set and update local socket counter under per-tenant lock
+	tLock := r.getTenantLock(tenantID)
+	tLock.Lock()
+	defer tLock.Unlock()
+
 	tKey := TenantNodesKey(tenantID)
 	if err := r.client.SAdd(ctx, tKey, nodeID); err != nil {
+		if userID != "" {
+			uKey := PresenceKey(tenantID, userID)
+			_ = r.client.HDel(ctx, uKey, connectionID)
+		}
 		return fmt.Errorf("sadd tenant nodes %s: %w", tKey, err)
 	}
 	_ = r.client.Expire(ctx, tKey, ttl)
@@ -440,10 +504,21 @@ func (r *PresenceRegistry) DeregisterPresence(
 	// 1. Remove connection from user hash if user_id was set
 	if userID != "" {
 		uKey := PresenceKey(tenantID, userID)
-		_ = r.client.HDel(ctx, uKey, connectionID)
+		if err := r.client.HDel(ctx, uKey, connectionID); err != nil {
+			r.logger.Warn("failed to remove connection from presence hash",
+				slog.String("tenant_id", tenantID),
+				slog.String("user_id", userID),
+				slog.String("connection_id", connectionID),
+				slog.String("error", err.Error()),
+			)
+		}
 	}
 
-	// 2. Decrement local socket counter on this node
+	// 2. Decrement local socket counter and prune tenant_nodes under per-tenant lock
+	tLock := r.getTenantLock(tenantID)
+	tLock.Lock()
+	defer tLock.Unlock()
+
 	r.mu.Lock()
 	count := r.localTenantSockets[tenantID] - 1
 	if count <= 0 {

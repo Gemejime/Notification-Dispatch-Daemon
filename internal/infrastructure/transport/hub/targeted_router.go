@@ -124,14 +124,14 @@ func (r *TargetedRouter) DispatchSSEFrame(ctx context.Context, event entity.Noti
 	if r.presence != nil {
 		nodes, err := r.presence.GetTargetNodes(ctx, event.TenantID, event.UserID)
 		if err != nil {
-			r.logger.Warn("failed to query presence target nodes, falling back to local hub check",
+			r.logger.Warn("failed to query presence target nodes",
 				slog.String("tenant_id", event.TenantID),
 				slog.String("user_id", event.UserID),
 				slog.String("error", err.Error()),
 			)
-		} else {
-			targetNodes = nodes
+			return fmt.Errorf("get target nodes for presence: %w", err)
 		}
+		targetNodes = nodes
 	}
 
 	// Always ensure local hub receives event if local connections match
@@ -196,6 +196,7 @@ func (r *TargetedRouter) DispatchSSEFrame(ctx context.Context, event entity.Noti
 				slog.String("event_id", event.EventID),
 				slog.String("error", err.Error()),
 			)
+			return fmt.Errorf("publish routed event to remote pod %s: %w", nodeID, err)
 		}
 	}
 

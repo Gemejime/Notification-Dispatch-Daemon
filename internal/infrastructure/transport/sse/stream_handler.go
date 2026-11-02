@@ -109,9 +109,6 @@ func (h *StreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID, _ := r.Context().Value(entity.ContextKeyUserID).(string)
-	if userID == "" {
-		userID = strings.TrimSpace(r.URL.Query().Get("user_id"))
-	}
 
 	// 2. Parse and validate optional severity_filter query parameter.
 	var severityFilter entity.Severity
@@ -209,6 +206,11 @@ func (h *StreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				slog.String("last_event_id", lastEventID),
 				slog.String("error", rErr.Error()),
 			)
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", "5")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"replay_fetch_failed"}`))
+			return
 		}
 	}
 
@@ -220,15 +222,15 @@ func (h *StreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 8. Stream replayed frames with high-watermark tracking.
-	var watermarkEventID string
+	replayedIDs := make(map[string]struct{}, len(replayed))
 	for _, ev := range replayed {
 		if conn.AcceptsEvent(ev) {
+			replayedIDs[ev.EventID] = struct{}{}
 			frame := ev.FormatSSEFrame(h.cfg.DefaultRetryMs)
 			if wErr := flusher.WriteFrame(frame); wErr != nil {
 				h.logger.Debug("client disconnected during replay backfill", slog.String("connection_id", connectionID))
 				return
 			}
-			watermarkEventID = ev.EventID
 		}
 	}
 
@@ -275,7 +277,7 @@ func (h *StreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					break
 				}
 				// High-watermark deduplication against backfill events.
-				if watermarkEventID != "" && entry.EventID <= watermarkEventID {
+				if _, alreadyReplayed := replayedIDs[entry.EventID]; alreadyReplayed {
 					continue
 				}
 				if writeErr := flusher.WriteFrame(entry.Frame); writeErr != nil {

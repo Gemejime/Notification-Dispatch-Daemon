@@ -184,13 +184,13 @@ func NewOperationalMuxWithDependencies(
 	mux.HandleFunc("/docs", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><title>Swagger UI - RAG Notification Dispatch Daemon</title></head><body><div id="swagger-ui" data-spec-url="/openapi.json"></div></body></html>`))
+		_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><title>Swagger UI - RAG Notification Dispatch Daemon</title><link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" /></head><body><div id="swagger-ui"></div><script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script><script>window.onload = function() { SwaggerUIBundle({ url: "/openapi.json", dom_id: "#swagger-ui" }); };</script></body></html>`))
 	})
 
 	mux.HandleFunc("/redoc", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><title>ReDoc - RAG Notification Dispatch Daemon</title></head><body><redoc spec-url="/openapi.json"></redoc></body></html>`))
+		_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><title>ReDoc - RAG Notification Dispatch Daemon</title><link href="https://fonts.googleapis.com/css?family=Montserrat:300,400,700|Roboto:300,400,700" rel="stylesheet"></head><body><redoc spec-url="/openapi.json"></redoc><script src="https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"></script></body></html>`))
 	})
 
 	// /v1/notifications/stream — Persistent SSE endpoint (ADR-002).
@@ -259,6 +259,7 @@ func NewOperationalMuxWithDependencies(
 			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
 		var req struct {
 			TenantID string `json:"tenant_id"`
 			Reason   string `json:"reason"`
@@ -270,8 +271,7 @@ func NewOperationalMuxWithDependencies(
 			return
 		}
 		if cache != nil {
-			subs, targets := cache.GetTenantRules(req.TenantID)
-			cache.ReplaceTenantRules(req.TenantID, subs, targets)
+			cache.EvictTenant(req.TenantID)
 		}
 		if metrics != nil {
 			metrics.IncCacheInvalidations(req.Reason)
@@ -452,6 +452,18 @@ func main() {
 
 	var draining atomic.Bool
 
+	var authenticator middleware.Authenticator
+	if cfg.JWTPublicKeyPEM.Unmasked() != "" {
+		jwtAuth, err := middleware.NewJWTAuthenticator(cfg.JWTPublicKeyPEM.Unmasked())
+		if err != nil {
+			logger.Error("failed to parse jwt public key pem", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		authenticator = jwtAuth
+	} else {
+		authenticator = middleware.SimpleTokenAuthenticator{}
+	}
+
 	routerHandler := transporthttp.NewRouter(transporthttp.RouterConfig{
 		Cache:    subCache,
 		Metrics:  metrics,
@@ -464,12 +476,14 @@ func main() {
 		StreamHandler:   streamHandler,
 		SessionsHandler: sessionsHandler,
 		InvalidationSub: invalidationSub,
+		Authenticator:   authenticator,
 		RateLimiter:     rateLimiter,
 	})
 
 	srv := &http.Server{
 		Addr:              ":" + cfg.HTTPPort,
 		Handler:           routerHandler,
+		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -46,6 +47,9 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	}
 	if cfg.RateLimiter == nil {
 		cfg.RateLimiter = middleware.NewReconnectRateLimiter(100, 200, 10000)
+	}
+	if cfg.Authenticator == nil {
+		cfg.Authenticator = middleware.SimpleTokenAuthenticator{}
 	}
 
 	mux := http.NewServeMux()
@@ -110,13 +114,13 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	mux.HandleFunc("/docs", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><title>Swagger UI - RAG Notification Dispatch Daemon</title></head><body><div id="swagger-ui" data-spec-url="/openapi.json"></div></body></html>`))
+		_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><title>Swagger UI - RAG Notification Dispatch Daemon</title><link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" /></head><body><div id="swagger-ui"></div><script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script><script>window.onload = function() { SwaggerUIBundle({ url: "/openapi.json", dom_id: "#swagger-ui" }); };</script></body></html>`))
 	})
 
 	mux.HandleFunc("/redoc", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><title>ReDoc - RAG Notification Dispatch Daemon</title></head><body><redoc spec-url="/openapi.json"></redoc></body></html>`))
+		_, _ = w.Write([]byte(`<!DOCTYPE html><html><head><title>ReDoc - RAG Notification Dispatch Daemon</title><link href="https://fonts.googleapis.com/css?family=Montserrat:300,400,700|Roboto:300,400,700" rel="stylesheet"></head><body><redoc spec-url="/openapi.json"></redoc><script src="https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"></script></body></html>`))
 	})
 
 	// 3. /v1/notifications/stream — High-Density SSE stream endpoint (ADR-002)
@@ -158,9 +162,15 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		}
 
 		if cfg.SessionsHandler != nil {
+			limit := 100
+			if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+				if parsed, err := strconv.Atoi(rawLimit); err == nil && parsed > 0 {
+					limit = parsed
+				}
+			}
 			res, err := cfg.SessionsHandler.Handle(r.Context(), query.ListActiveSessionsQuery{
 				TenantID: tenantID,
-				Limit:    100,
+				Limit:    limit,
 				Cursor:   strings.TrimSpace(r.URL.Query().Get("cursor")),
 			})
 			if err != nil {
@@ -187,11 +197,12 @@ func NewRouter(cfg RouterConfig) http.Handler {
 	mux.Handle("/v1/notifications/sessions", authMW(rateMW(middleware.TenantAuthorizationMiddleware(sessionsHandler))))
 
 	// 5. /v1/notifications/subscriptions/invalidate — Subscription cache invalidation broadcast (ADR-004)
-	mux.HandleFunc("/v1/notifications/subscriptions/invalidate", func(w http.ResponseWriter, r *http.Request) {
+	invalidateHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, `{"error":"method_not_allowed"}`, http.StatusMethodNotAllowed)
 			return
 		}
+		r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
 		var req struct {
 			TenantID string `json:"tenant_id"`
 			Reason   string `json:"reason"`
@@ -204,13 +215,22 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		}
 
 		if cfg.InvalidationSub != nil {
-			_ = cfg.InvalidationSub.BroadcastInvalidation(r.Context(), req.TenantID, req.Reason)
+			if err := cfg.InvalidationSub.BroadcastInvalidation(r.Context(), req.TenantID, req.Reason); err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"error":"invalidation_broadcast_failed"}`))
+				return
+			}
 		} else if cfg.Cache != nil {
-			subs, targets := cfg.Cache.GetTenantRules(req.TenantID)
-			cfg.Cache.ReplaceTenantRules(req.TenantID, subs, targets)
+			cfg.Cache.EvictTenant(req.TenantID)
 			if cfg.Metrics != nil {
 				cfg.Metrics.IncCacheInvalidations(req.Reason)
 			}
+		} else {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte(`{"error":"invalidation_service_unavailable"}`))
+			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
@@ -222,6 +242,7 @@ func NewRouter(cfg RouterConfig) http.Handler {
 		})
 		_, _ = w.Write(resp)
 	})
+	mux.Handle("/v1/notifications/subscriptions/invalidate", authMW(rateMW(invalidateHandler)))
 
 	// Wrap root with SecuredLogging, PanicRecovery, and CorrelationID
 	root := middleware.CorrelationIDMiddleware(

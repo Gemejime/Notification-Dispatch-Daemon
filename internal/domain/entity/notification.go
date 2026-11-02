@@ -203,19 +203,24 @@ func compactPayloadJSON(raw []byte) []byte {
 	return dst.Bytes()
 }
 
+func appendJSONString(buf []byte, s string) []byte {
+	b, _ := json.Marshal(s)
+	return append(buf, b...)
+}
+
 func (e NotificationEvent) appendSSEDataJSON(buf []byte, compactedPayload []byte) []byte {
 	buf = append(buf, `{"event_id":`...)
-	buf = strconv.AppendQuote(buf, e.EventID)
+	buf = appendJSONString(buf, e.EventID)
 	buf = append(buf, `,"tenant_id":`...)
-	buf = strconv.AppendQuote(buf, e.TenantID)
+	buf = appendJSONString(buf, e.TenantID)
 	if e.UserID != "" {
 		buf = append(buf, `,"user_id":`...)
-		buf = strconv.AppendQuote(buf, e.UserID)
+		buf = appendJSONString(buf, e.UserID)
 	}
 	buf = append(buf, `,"event_type":`...)
-	buf = strconv.AppendQuote(buf, e.EventType)
+	buf = appendJSONString(buf, e.EventType)
 	buf = append(buf, `,"severity":`...)
-	buf = strconv.AppendQuote(buf, string(e.Severity))
+	buf = appendJSONString(buf, string(e.Severity))
 	buf = append(buf, `,"is_terminal":`...)
 	buf = strconv.AppendBool(buf, e.IsTerminal)
 	buf = append(buf, `,"occurred_at":"`...)

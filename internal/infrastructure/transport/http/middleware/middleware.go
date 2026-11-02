@@ -4,9 +4,18 @@ package middleware
 
 import (
 	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -51,6 +60,11 @@ func (rec *statusRecorder) Flush() {
 	if f, ok := rec.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+}
+
+// Unwrap exposes the underlying ResponseWriter for http.ResponseController compatibility.
+func (rec *statusRecorder) Unwrap() http.ResponseWriter {
+	return rec.ResponseWriter
 }
 
 // SecuredLoggingMiddleware logs incoming HTTP requests using structured slog JSON
@@ -146,13 +160,132 @@ func (a SimpleTokenAuthenticator) Authenticate(token string) (string, string, er
 	return tenantID, userID, nil
 }
 
-// AuthMiddleware enforces Bearer authentication and injects TenantID and UserID into the request context.
-func AuthMiddleware(auth Authenticator) func(http.Handler) http.Handler {
-	if auth == nil {
-		auth = SimpleTokenAuthenticator{}
+// JWTAuthenticator verifies JSON Web Tokens using a PEM-encoded public key.
+type JWTAuthenticator struct {
+	publicKey crypto.PublicKey
+}
+
+// NewJWTAuthenticator initializes a JWTAuthenticator by parsing a PEM-encoded RSA, ECDSA, or Ed25519 public key.
+func NewJWTAuthenticator(publicKeyPEM string) (*JWTAuthenticator, error) {
+	trimmed := strings.TrimSpace(publicKeyPEM)
+	if trimmed == "" {
+		return &JWTAuthenticator{}, nil
 	}
+	block, _ := pem.Decode([]byte(trimmed))
+	if block == nil {
+		return nil, fmt.Errorf("failed to decode PEM block for jwt public key")
+	}
+	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		if rsaPub, rsaErr := x509.ParsePKCS1PublicKey(block.Bytes); rsaErr == nil {
+			return &JWTAuthenticator{publicKey: rsaPub}, nil
+		}
+		return nil, fmt.Errorf("parse jwt public key: %w", err)
+	}
+	return &JWTAuthenticator{publicKey: pub}, nil
+}
+
+// Authenticate verifies the JWT signature and extracts tenant_id and user_id claims.
+func (a *JWTAuthenticator) Authenticate(token string) (string, string, error) {
+	if a.publicKey == nil {
+		return "", "", errors.New("jwt public key not configured")
+	}
+
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return "", "", errors.New("invalid jwt format")
+	}
+
+	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return "", "", fmt.Errorf("decode jwt header: %w", err)
+	}
+	var header struct {
+		Alg string `json:"alg"`
+	}
+	if err := json.Unmarshal(headerBytes, &header); err != nil {
+		return "", "", fmt.Errorf("unmarshal jwt header: %w", err)
+	}
+
+	sigBytes, err := base64.RawURLEncoding.DecodeString(parts[2])
+	if err != nil {
+		return "", "", fmt.Errorf("decode jwt signature: %w", err)
+	}
+
+	signingInput := []byte(parts[0] + "." + parts[1])
+
+	switch header.Alg {
+	case "RS256":
+		rsaPub, ok := a.publicKey.(*rsa.PublicKey)
+		if !ok {
+			return "", "", errors.New("public key is not RSA for RS256")
+		}
+		h := sha256.Sum256(signingInput)
+		if err := rsa.VerifyPKCS1v15(rsaPub, crypto.SHA256, h[:], sigBytes); err != nil {
+			return "", "", fmt.Errorf("verify rs256 signature: %w", err)
+		}
+	case "ES256":
+		ecdsaPub, ok := a.publicKey.(*ecdsa.PublicKey)
+		if !ok {
+			return "", "", errors.New("public key is not ECDSA for ES256")
+		}
+		h := sha256.Sum256(signingInput)
+		if !ecdsa.VerifyASN1(ecdsaPub, h[:], sigBytes) {
+			return "", "", errors.New("invalid es256 signature")
+		}
+	case "EdDSA":
+		edPub, ok := a.publicKey.(ed25519.PublicKey)
+		if !ok {
+			return "", "", errors.New("public key is not Ed25519 for EdDSA")
+		}
+		if !ed25519.Verify(edPub, signingInput, sigBytes) {
+			return "", "", errors.New("invalid eddsa signature")
+		}
+	default:
+		return "", "", fmt.Errorf("unsupported jwt alg %q", header.Alg)
+	}
+
+	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return "", "", fmt.Errorf("decode jwt payload: %w", err)
+	}
+
+	var claims struct {
+		TenantID string `json:"tenant_id"`
+		UserID   string `json:"user_id"`
+		Sub      string `json:"sub"`
+		Exp      int64  `json:"exp"`
+	}
+	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
+		return "", "", fmt.Errorf("unmarshal jwt claims: %w", err)
+	}
+
+	if claims.Exp > 0 && time.Now().Unix() > claims.Exp {
+		return "", "", errors.New("jwt expired")
+	}
+
+	tenantID := claims.TenantID
+	if tenantID == "" {
+		tenantID = claims.Sub
+	}
+	if tenantID == "" {
+		return "", "", errors.New("missing tenant_id in jwt claims")
+	}
+
+	return tenantID, claims.UserID, nil
+}
+
+// AuthMiddleware enforces Bearer authentication and injects TenantID and UserID into the request context.
+// Fails closed with 401 Unauthorized if auth is nil.
+func AuthMiddleware(auth Authenticator) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if auth == nil {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+				return
+			}
 			rawHeader := strings.TrimSpace(r.Header.Get("Authorization"))
 			if !strings.HasPrefix(rawHeader, "Bearer ") {
 				// Query parameter fallback for SSE EventSource clients that cannot set Authorization headers
@@ -244,11 +377,23 @@ func (rl *ReconnectRateLimiter) Allow(key string, now time.Time) bool {
 	b, ok := rl.buckets[key]
 	if !ok {
 		if len(rl.buckets) >= rl.maxKeys {
-			// Evict arbitrary entry to protect against memory exhaustion
-			for k := range rl.buckets {
-				delete(rl.buckets, k)
-				break
+			// Evict only a bucket that has refilled to capacity
+			var evictKey string
+			found := false
+			for k, existing := range rl.buckets {
+				elapsed := now.Sub(existing.lastRefill).Seconds()
+				currentTokens := existing.tokens + elapsed*rl.refill
+				if currentTokens >= rl.capacity {
+					evictKey = k
+					found = true
+					break
+				}
 			}
+			if !found {
+				// No bucket has refilled to capacity; reject the new key without evicting an active/exhausted bucket
+				return false
+			}
+			delete(rl.buckets, evictKey)
 		}
 		rl.buckets[key] = &tokenBucket{
 			tokens:     rl.capacity - 1,
