@@ -1,0 +1,29 @@
+{{- if .Values.autoscaling.enabled -}}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "rag-notification-dispatch-daemon.fullname" . }}-hpa
+  labels:
+    {{- include "rag-notification-dispatch-daemon.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "rag-notification-dispatch-daemon.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+    - type: Pods
+      pods:
+        metric:
+          name: notification_active_sse_connections
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.autoscaling.targetActiveConnections }}
+{{- end }}

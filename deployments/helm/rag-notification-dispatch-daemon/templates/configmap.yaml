@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "rag-notification-dispatch-daemon.fullname" . }}-config
+  labels:
+    {{- include "rag-notification-dispatch-daemon.labels" . | nindent 4 }}
+data:
+  PORT: {{ .Values.service.port | quote }}
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  LOG_FORMAT: {{ .Values.config.logFormat | quote }}
+  KAFKA_BROKERS: {{ .Values.config.kafkaBrokers | quote }}
+  KAFKA_TOPIC_OUTBOX: {{ .Values.config.kafkaTopicOutbox | quote }}
+  KAFKA_CONSUMER_GROUP: {{ .Values.config.kafkaConsumerGroup | quote }}
+  REDIS_HOST: {{ .Values.config.redisHost | quote }}
+  POSTGRES_HOST: {{ .Values.config.postgresHost | quote }}
+  POSTGRES_DB: {{ .Values.config.postgresDb | quote }}
+  POSTGRES_USER: {{ .Values.config.postgresUser | quote }}
+  POSTGRES_MAX_CONNS: {{ .Values.config.postgresMaxConns | quote }}
+  SSE_RING_BUFFER_SIZE: {{ .Values.config.sseRingBufferSize | quote }}
+  SSE_HEARTBEAT_SECONDS: {{ .Values.config.sseHeartbeatSeconds | quote }}
+  SLOW_CONSUMER_TIMEOUT_SECONDS: {{ .Values.config.slowConsumerTimeoutSeconds | quote }}
+  DRAIN_JITTER_MIN_SECONDS: {{ .Values.config.drainJitterMinSeconds | quote }}
+  DRAIN_JITTER_MAX_SECONDS: {{ .Values.config.drainJitterMaxSeconds | quote }}
+  REPLAY_BUFFER_MAXLEN: {{ .Values.config.replayBufferMaxlen | quote }}
+  RATE_LIMIT_TOKENS_PER_SEC: {{ .Values.config.rateLimitTokensPerSec | quote }}
+  RATE_LIMIT_BURST: {{ .Values.config.rateLimitBurst | quote }}
+  GOMEMLIMIT: {{ .Values.config.gomemlimit | quote }}
+  GOGC: {{ .Values.config.gogc | quote }}
