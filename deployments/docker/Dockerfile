@@ -44,3 +44,4 @@ USER nonroot:nonroot
 
 # Entrypoint executes compiled Go daemon directly (zero-shell runtime)
 ENTRYPOINT ["/app/notification-daemon"]
+

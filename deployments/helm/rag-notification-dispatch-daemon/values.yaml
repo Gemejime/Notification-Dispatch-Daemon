@@ -182,3 +182,4 @@ prometheusRule:
       severity: critical
       thresholdBytes: 1932735283 # 1.8 GiB
       duration: 1m
+

@@ -52,3 +52,4 @@ spec:
             summary: "Daemon heap allocation near OOM ceiling (> 1.8 GiB)"
             description: "Pod allocated memory exceeds 1.8 GiB for > {{ .Values.prometheusRule.alerts.nearOOMMemorySaturation.duration }}. Risk of cgroup 2GiB OOMKill."
 {{- end }}
+

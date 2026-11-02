@@ -11,3 +11,4 @@ spec:
     matchLabels:
       {{- include "rag-notification-dispatch-daemon.selectorLabels" . | nindent 6 }}
 {{- end }}
+

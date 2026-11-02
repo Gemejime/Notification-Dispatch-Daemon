@@ -26,3 +26,4 @@ data:
   RATE_LIMIT_BURST: {{ .Values.config.rateLimitBurst | quote }}
   GOMEMLIMIT: {{ .Values.config.gomemlimit | quote }}
   GOGC: {{ .Values.config.gogc | quote }}
+

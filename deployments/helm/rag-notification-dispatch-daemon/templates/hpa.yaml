@@ -27,3 +27,4 @@ spec:
           type: AverageValue
           averageValue: {{ .Values.autoscaling.targetActiveConnections }}
 {{- end }}
+

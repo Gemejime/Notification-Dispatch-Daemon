@@ -13,3 +13,4 @@ spec:
       name: http
   selector:
     {{- include "rag-notification-dispatch-daemon.selectorLabels" . | nindent 4 }}
+
