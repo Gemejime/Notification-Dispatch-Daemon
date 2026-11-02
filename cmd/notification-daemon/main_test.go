@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -8,9 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gemejime/rag-notification-dispatch-daemon/internal/application/command"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/domain/entity"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/cache/memory"
 	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/observability"
+	transporthttp "github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/transport/http"
+	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/transport/http/middleware"
+	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/transport/hub"
+	"github.com/gemejime/rag-notification-dispatch-daemon/internal/infrastructure/transport/sse"
 )
 
 func TestOperationalProbesAndConfig(t *testing.T) {
@@ -145,7 +151,83 @@ func TestOperationalProbesAndConfig(t *testing.T) {
 		t.Fatalf("expected /v1/notifications/subscriptions/invalidate 202, got %d", recInv.Code)
 	}
 
-	// 8. ComputeDrainDelay should stay within [min, max].
+	// Assert that the tenant rules reflect the invalidation (evicted from cache)
+	subs, targets := cache.GetTenantRules("tnt_01")
+	if len(subs) != 0 || len(targets) != 0 {
+		t.Fatalf("expected tenant rules to reflect invalidation, got %d subs and %d targets", len(subs), len(targets))
+	}
+
+	// 8. Exercise production router created by transporthttp.NewRouter
+	prodRouter := transporthttp.NewRouter(transporthttp.RouterConfig{
+		Cache:    cache,
+		Metrics:  metrics,
+		Draining: &draining,
+		ReadinessDeps: &transporthttp.ReadinessDependency{
+			RedisConnected: redisOK.Load,
+			CDCConsuming:   cdcOK.Load,
+		},
+		Authenticator: middleware.SimpleTokenAuthenticator{},
+	})
+
+	for _, route := range []string{"/healthz", "/ready", "/metrics", "/openapi.json", "/api/docs", "/docs", "/redoc"} {
+		req := httptest.NewRequest(http.MethodGet, route, nil)
+		rec := httptest.NewRecorder()
+		prodRouter.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected prod router %s 200, got %d", route, rec.Code)
+		}
+	}
+
+	// Exercise production router stream route with cancellable context and assert SSE headers
+	streamHub := hub.NewConnectionHub("test-node", 5*time.Second, 30*time.Second, 60*time.Second, metrics, nil)
+	streamRegCmd := command.NewRegisterConnectionHandler(streamHub, nil, 45*time.Second)
+	streamTermCmd := command.NewTerminateConnectionHandler(streamHub, nil)
+	testStreamHandler := sse.NewStreamHandler(
+		sse.StreamHandlerConfig{
+			NodeID:              "test-node",
+			RingBufferSize:      256,
+			SlowConsumerTimeout: 5 * time.Second,
+			HeartbeatInterval:   15 * time.Second,
+			DefaultRetryMs:      5000,
+		},
+		streamHub,
+		streamRegCmd,
+		streamTermCmd,
+		nil,
+		nil,
+		metrics,
+		nil,
+	)
+
+	routerWithStream := transporthttp.NewRouter(transporthttp.RouterConfig{
+		Cache:         cache,
+		Metrics:       metrics,
+		StreamHandler: testStreamHandler,
+		Authenticator: middleware.SimpleTokenAuthenticator{},
+	})
+
+	ctxStream, cancelStream := context.WithCancel(context.Background())
+	reqProdStream := httptest.NewRequest(http.MethodGet, "/v1/notifications/stream", nil).WithContext(ctxStream)
+	reqProdStream.Header.Set("Authorization", "Bearer valid-token")
+	recProdStream := httptest.NewRecorder()
+
+	doneCh := make(chan struct{})
+	go func() {
+		defer close(doneCh)
+		routerWithStream.ServeHTTP(recProdStream, reqProdStream)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancelStream()
+	<-doneCh
+
+	if recProdStream.Header().Get("Content-Type") != "text/event-stream; charset=utf-8" ||
+		recProdStream.Header().Get("X-Accel-Buffering") != "no" {
+		t.Fatalf("expected SSE headers on production router stream, got Content-Type=%s, X-Accel-Buffering=%s",
+			recProdStream.Header().Get("Content-Type"), recProdStream.Header().Get("X-Accel-Buffering"))
+	}
+
+	// 9. ComputeDrainDelay should stay within [min, max].
 	delay := ComputeDrainDelay(30*time.Second, 60*time.Second)
 	if delay < 30*time.Second || delay > 60*time.Second {
 		t.Fatalf("expected drain delay in [30s, 60s], got %v", delay)

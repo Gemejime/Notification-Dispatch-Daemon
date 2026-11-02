@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -75,6 +76,21 @@ func TestDispatchPipelineEndToEnd(t *testing.T) {
 
 	cacheB := memory.NewSubscriptionCache()
 	cacheB.ReplaceTenantRules(tenantID, []entity.Subscription{sub1}, []entity.WebhookTarget{target1})
+
+	stubSub := &stubSubscriptionRepo{
+		subs: map[string][]entity.Subscription{
+			tenantID: {sub1},
+		},
+	}
+	stubWebhook := &stubWebhookTargetRepo{
+		targets: map[string][]entity.WebhookTarget{
+			tenantID: {target1},
+		},
+	}
+	invSubB := redis.NewInvalidationSubscriber(backplane, cacheB, stubSub, stubWebhook, logger, metrics)
+	go func() {
+		_ = invSubB.Run(ctx)
+	}()
 
 	// 2. Setup Pod A (Ingestion & Router)
 	regA := redis.NewPresenceRegistry(redis.PresenceRegistryConfig{
@@ -317,17 +333,41 @@ func TestDispatchPipelineEndToEnd(t *testing.T) {
 	disabledTarget := target1
 	disabledTarget.Active = false
 
+	stubWebhook.mu.Lock()
+	stubWebhook.targets[tenantID] = []entity.WebhookTarget{disabledTarget}
+	stubWebhook.mu.Unlock()
+
 	invStart := time.Now()
-	// Invalidate cache on Pod A
-	cacheA.ReplaceTenantRules(tenantID, []entity.Subscription{sub1}, []entity.WebhookTarget{disabledTarget})
 	_ = backplane.Publish(ctx, redis.TenantConfigUpdatedChannel, invPayload)
+
+	// Wait for cacheB to reload via InvalidationSubscriber
+	reloaded := false
+	timeout := time.After(100 * time.Millisecond)
+	ticker := time.NewTicker(2 * time.Millisecond)
+	defer ticker.Stop()
+
+	for !reloaded {
+		select {
+		case <-timeout:
+			t.Fatalf("cache invalidation coherence exceeded 100ms SLO")
+		case <-ticker.C:
+			_, targets := cacheB.GetTenantRules(tenantID)
+			if len(targets) > 0 && !targets[0].Active {
+				reloaded = true
+			}
+		}
+	}
 	invElapsed := time.Since(invStart)
 
 	if invElapsed > 100*time.Millisecond {
 		t.Fatalf("cache invalidation coherence %v exceeded 100ms SLO", invElapsed)
 	}
 
-	// Ingest second CDC event: SSE should dispatch, but 0 webhooks enqueued due to updated rule!
+	// Ingest second CDC event through handler reading cacheB: SSE should dispatch, but 0 webhooks enqueued!
+	evaluatorB := router.NewRuleEvaluator()
+	filterB := router.NewFilter(router.DefaultDedupWindowTTL, router.DefaultMaxDedupEntries)
+	cdcHandlerB := command.NewProcessCDCEventHandler(cacheB, evaluatorB, filterB, routerB, taskPublisher, logger, metrics)
+
 	envelope2 := &notificationv1.NotificationEventEnvelope{
 		EventId:          "01J9Z8K4_E2E_002",
 		TenantId:         tenantID,
@@ -341,7 +381,7 @@ func TestDispatchPipelineEndToEnd(t *testing.T) {
 		PayloadJson:      []byte(`{"stage":"COMPLETED","progress_pct":100}`),
 	}
 
-	res2, err2 := cdcHandlerA.Handle(ctx, envelope2)
+	res2, err2 := cdcHandlerB.Handle(ctx, envelope2)
 	if err2 != nil {
 		t.Fatalf("handle event 2: %v", err2)
 	}
@@ -351,4 +391,34 @@ func TestDispatchPipelineEndToEnd(t *testing.T) {
 	if res2.WebhooksEnqueued != 0 {
 		t.Fatalf("expected 0 webhooks enqueued after invalidation disabled target, got %d", res2.WebhooksEnqueued)
 	}
+}
+
+type stubSubscriptionRepo struct {
+	mu   sync.Mutex
+	subs map[string][]entity.Subscription
+}
+
+func (s *stubSubscriptionRepo) ListAllActive(_ context.Context) ([]entity.Subscription, error) {
+	return nil, nil
+}
+
+func (s *stubSubscriptionRepo) ListByTenant(_ context.Context, tenantID string) ([]entity.Subscription, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.subs[tenantID], nil
+}
+
+type stubWebhookTargetRepo struct {
+	mu      sync.Mutex
+	targets map[string][]entity.WebhookTarget
+}
+
+func (w *stubWebhookTargetRepo) ListAllActive(_ context.Context) ([]entity.WebhookTarget, error) {
+	return nil, nil
+}
+
+func (w *stubWebhookTargetRepo) ListByTenant(_ context.Context, tenantID string) ([]entity.WebhookTarget, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.targets[tenantID], nil
 }

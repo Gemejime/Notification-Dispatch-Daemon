@@ -27,12 +27,13 @@
 ## Completed Units
 
 - **Phase 3 Implementation — Targeted Routing & Egress Enqueueing**:
-  - **Redis 7.2 Presence Directory & Bounded Replay Store (`internal/infrastructure/cache/redis/presence_registry.go`)**:
+  - **In-Memory Redis Simulator for Presence Directory & Bounded Replay Store (`internal/infrastructure/cache/redis/presence_registry.go`)**:
     - Implemented `command.PresenceRegistrar` (`RegisterPresence`, `DeregisterPresence`, `RefreshPresence`).
     - Hot-path targeted node queries: `rag:notify:presence:{tenant_id}:{user_id}` and `rag:notify:tenant_nodes:{tenant_id}` resolved in $\le 5\text{ms}$.
     - 45s heartbeat refresh on 15s SSE keepalive pings; immediate node pruning from `tenant_nodes` on last local socket disconnect to prevent stale ghost routing.
     - Bounded Redis Stream replay buffer (`rag:notify:replay:{tenant_id}`, `MAXLEN ~ 1000`, `TTL = 3600s`).
     - High-performance thread-safe multi-node Redis cluster simulator (`InMemoryRedisClusterClient`) for deterministic multi-instance tests.
+    - *Outstanding Work*: Production Redis 7.2 cluster client adapter and startup wiring in `main.go`.
   - **Targeted Pod Routing Engine (`internal/infrastructure/transport/hub/targeted_router.go`)**:
     - Implemented `command.NodeEventDispatcher` (`ADR-003`): delivers directly to local `ConnectionHub` when `node_id == localNodeID` (zero network hop, zero re-serialization), and publishes pre-formatted `sse_frame` wire envelopes (`PodRoutedEnvelope`) with OpenTelemetry W3C `trace_id` directly to `pod.{node_id}.events`.
     - Background subscriber on `pod.{local_node_id}.events` receiving peer-routed envelopes and pushing pre-formatted frames directly into matching client ring buffers.
