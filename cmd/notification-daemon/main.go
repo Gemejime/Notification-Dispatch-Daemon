@@ -45,8 +45,33 @@ const (
 	defaultShutdownBudget = 75 * time.Second
 )
 
+// Approved environment identifiers (strictly production, staging, development; no local).
+const (
+	EnvDevelopment = "development"
+	EnvStaging     = "staging"
+	EnvProduction  = "production"
+)
+
+// ParseEnvironment validates that the environment string is one of the approved options:
+// "production", "staging", or "development". If empty, it defaults to "development".
+// Invalid environments (such as "local") return a descriptive error.
+func ParseEnvironment(raw string) (string, error) {
+	trimmed := strings.ToLower(strings.TrimSpace(raw))
+	switch trimmed {
+	case "production", "prod":
+		return EnvProduction, nil
+	case "staging", "stage":
+		return EnvStaging, nil
+	case "development", "dev", "":
+		return EnvDevelopment, nil
+	default:
+		return "", fmt.Errorf("invalid ENVIRONMENT %q: approved options are %q, %q, %q", raw, EnvProduction, EnvStaging, EnvDevelopment)
+	}
+}
+
 // Config holds the 12-Factor environment configuration defined in .ai/doc-api.md Section 6.
 type Config struct {
+	Environment          string
 	NodeID               string
 	HTTPPort             string
 	PostgresDSN          observability.SecretString
@@ -74,11 +99,17 @@ func LoadConfig() (Config, error) {
 	}
 	ConfigureRuntimeMemoryBounds()
 
+	envStr, err := ParseEnvironment(os.Getenv("ENVIRONMENT"))
+	if err != nil {
+		return Config{}, fmt.Errorf("parse environment: %w", err)
+	}
+
 	hostname, err := os.Hostname()
 	if err != nil || hostname == "" {
 		hostname = "node-local-0"
 	}
 	return Config{
+		Environment:          envStr,
 		NodeID:               envOrDefault("NODE_ID", hostname),
 		HTTPPort:             envOrDefault("HTTP_PORT", envOrDefault("PORT", "8080")),
 		PostgresDSN:          observability.NewSecretString(os.Getenv("POSTGRES_DSN")),
@@ -506,6 +537,7 @@ func main() {
 	serverErrCh := make(chan error, 1)
 	go func() {
 		logger.Info("starting rag-notification-dispatch-daemon",
+			slog.String("environment", cfg.Environment),
 			slog.String("node_id", cfg.NodeID),
 			slog.String("http_port", cfg.HTTPPort),
 			slog.Any("postgres_dsn", cfg.PostgresDSN),

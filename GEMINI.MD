@@ -30,7 +30,7 @@ Before planning, creating, or modifying any code, configuration, or documentatio
 - **Strict Redaction Before Emission**:
   - **NEVER** log raw JWTs, channel authorization bearer tokens, webhook HMAC-SHA256 signing secrets, PostgreSQL/PgBouncer credentials, Redis passwords, or sensitive PII/document text inside notification payloads.
   - Enforce automatic redaction via `slog.LogValuer` and `ReplaceAttr` hooks so sensitive fields (`authorization`, `token`, `secret`, `password`, `hmac_key`) always serialize as `"[REDACTED]"`.
-  - Emit only safe operational metadata and correlation identifiers (`trace_id`, `tenant_id`, `user_id`, `node_id`, `event_id`, `connection_id`, `event_type`, `severity`, `payload_bytes_len`, `write_latency_ms`).
+  - Emit only safe operational metadata and correlation identifiers (`environment`, `trace_id`, `tenant_id`, `user_id`, `node_id`, `event_id`, `connection_id`, `event_type`, `severity`, `payload_bytes_len`, `write_latency_ms`).
 - **Sanitized Client Errors**: Never leak internal stack traces, SQL queries, or Redis topology details in HTTP/SSE error responses.
 
 ---

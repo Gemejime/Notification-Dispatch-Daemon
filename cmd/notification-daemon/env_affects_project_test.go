@@ -19,6 +19,7 @@ func TestEnvFileDirectlyAffectsProject(t *testing.T) {
 
 	// Phase 1: Write initial .env values
 	initialEnvContent := `
+ENVIRONMENT=staging
 NODE_ID=node-env-affected-01
 HTTP_PORT=9876
 LOG_LEVEL=DEBUG
@@ -47,6 +48,10 @@ GOGC=65
 	cfg1, err := LoadConfig()
 	if err != nil {
 		t.Fatalf("failed to load initial config: %v", err)
+	}
+
+	if cfg1.Environment != EnvStaging {
+		t.Errorf("Environment: got %q, want %q", cfg1.Environment, EnvStaging)
 	}
 
 	if cfg1.NodeID != "node-env-affected-01" {
@@ -103,6 +108,7 @@ GOGC=65
 
 	// Phase 2: Modify .env values and verify they IMMEDIATELY affect the project on reload
 	modifiedEnvContent := `
+ENVIRONMENT=production
 NODE_ID=node-env-affected-02
 HTTP_PORT=9999
 LOG_LEVEL=ERROR
@@ -121,6 +127,9 @@ GOGC=100
 		t.Fatalf("failed to load updated config: %v", err)
 	}
 
+	if cfg2.Environment != EnvProduction {
+		t.Errorf("modified Environment: got %q, want %q", cfg2.Environment, EnvProduction)
+	}
 	if cfg2.NodeID != "node-env-affected-02" {
 		t.Errorf("modified NodeID: got %q, want %q", cfg2.NodeID, "node-env-affected-02")
 	}
@@ -146,5 +155,51 @@ GOGC=100
 	}
 	if parsedGC := config.ParseGCPercent(os.Getenv("GOGC"), 0); parsedGC != 100 {
 		t.Errorf("modified GOGC: got %d, want 100", parsedGC)
+	}
+}
+
+// TestParseEnvironmentValidation verifies that only approved options
+// ("production", "staging", "development") are accepted and that "local" is rejected.
+func TestParseEnvironmentValidation(t *testing.T) {
+	validCases := []struct {
+		input string
+		want  string
+	}{
+		{"production", EnvProduction},
+		{"PRODUCTION", EnvProduction},
+		{"prod", EnvProduction},
+		{"staging", EnvStaging},
+		{"STAGING", EnvStaging},
+		{"stage", EnvStaging},
+		{"development", EnvDevelopment},
+		{"DEVELOPMENT", EnvDevelopment},
+		{"dev", EnvDevelopment},
+		{"", EnvDevelopment}, // Unset defaults to development
+	}
+
+	for _, tc := range validCases {
+		got, err := ParseEnvironment(tc.input)
+		if err != nil {
+			t.Errorf("ParseEnvironment(%q) unexpected error: %v", tc.input, err)
+		}
+		if got != tc.want {
+			t.Errorf("ParseEnvironment(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+
+	invalidCases := []string{
+		"local",
+		"LOCAL",
+		"test",
+		"qa",
+		"sandbox",
+		"docker",
+	}
+
+	for _, inv := range invalidCases {
+		got, err := ParseEnvironment(inv)
+		if err == nil {
+			t.Errorf("ParseEnvironment(%q) expected error for unapproved option, got %q", inv, got)
+		}
 	}
 }
