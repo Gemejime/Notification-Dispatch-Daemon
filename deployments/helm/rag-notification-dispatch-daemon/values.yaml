@@ -122,6 +122,30 @@ podAntiAffinity:
 tolerations: []
 
 # 12-Factor runtime environment configuration
+# 12-Factor runtime environment configuration (synced from .env.prod)
+env:
+  secretName: "rag-notification-dispatch-daemon-secrets"
+  DOTENV_OVERRIDE: "false"
+  DRAIN_JITTER_MAX: "60s"
+  DRAIN_JITTER_MIN: "30s"
+  ENVIRONMENT: "production"
+  GOGC: "80"
+  GOMEMLIMIT: "1800MiB"
+  HTTP_PORT: "8080"
+  JWT_AUDIENCE: "rag-notification-dispatch-daemon"
+  JWT_ISSUER: "rag-auth-service"
+  KAFKA_BROKERS: "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092"
+  KAFKA_CDC_TOPICS: "rag.cdc.kb-catalog,rag.cdc.ingestion,rag.cdc.chunk-lifecycle"
+  KAFKA_CONSUMER_GROUP: "rag-notification-dispatch-daemon"
+  LOG_LEVEL: "INFO"
+  NODE_ID: "node-prod-01"
+  PORT: "8080"
+  POSTGRES_DSN: "postgres://rag_daemon_app:CHANGE_ME_PRODUCTION_POSTGRES_PASSWORD@pgbouncer.postgres.svc.cluster.local:6432/rag_notifications?sslmode=verify-full"
+  REDIS_ADDRS: "redis-cluster-node-0.redis.svc.cluster.local:6379,redis-cluster-node-1.redis.svc.cluster.local:6379,redis-cluster-node-2.redis.svc.cluster.local:6379"
+  SSE_HEARTBEAT_INTERVAL: "15s"
+  SSE_RING_BUFFER_SIZE: "256"
+  SSE_SLOW_CONSUMER_TIMEOUT: "5s"
+  WEBHOOK_QUEUE_STREAM: "rag:webhook:tasks"
 config:
   logLevel: "INFO"
   logFormat: "json"

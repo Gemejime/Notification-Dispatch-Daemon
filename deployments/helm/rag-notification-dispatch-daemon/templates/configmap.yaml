@@ -5,25 +5,10 @@ metadata:
   labels:
     {{- include "rag-notification-dispatch-daemon.labels" . | nindent 4 }}
 data:
-  PORT: {{ .Values.service.port | quote }}
-  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
-  LOG_FORMAT: {{ .Values.config.logFormat | quote }}
-  KAFKA_BROKERS: {{ .Values.config.kafkaBrokers | quote }}
-  KAFKA_TOPIC_OUTBOX: {{ .Values.config.kafkaTopicOutbox | quote }}
-  KAFKA_CONSUMER_GROUP: {{ .Values.config.kafkaConsumerGroup | quote }}
-  REDIS_HOST: {{ .Values.config.redisHost | quote }}
-  POSTGRES_HOST: {{ .Values.config.postgresHost | quote }}
-  POSTGRES_DB: {{ .Values.config.postgresDb | quote }}
-  POSTGRES_USER: {{ .Values.config.postgresUser | quote }}
-  POSTGRES_MAX_CONNS: {{ .Values.config.postgresMaxConns | quote }}
-  SSE_RING_BUFFER_SIZE: {{ .Values.config.sseRingBufferSize | quote }}
-  SSE_HEARTBEAT_INTERVAL: {{ printf "%ss" (.Values.config.sseHeartbeatSeconds | toString) | quote }}
-  SSE_SLOW_CONSUMER_TIMEOUT: {{ printf "%ss" (.Values.config.slowConsumerTimeoutSeconds | toString) | quote }}
-  DRAIN_JITTER_MIN: {{ printf "%ss" (.Values.config.drainJitterMinSeconds | toString) | quote }}
-  DRAIN_JITTER_MAX: {{ printf "%ss" (.Values.config.drainJitterMaxSeconds | toString) | quote }}
-  REPLAY_BUFFER_MAXLEN: {{ .Values.config.replayBufferMaxlen | quote }}
-  RATE_LIMIT_TOKENS_PER_SEC: {{ .Values.config.rateLimitTokensPerSec | quote }}
-  RATE_LIMIT_BURST: {{ .Values.config.rateLimitBurst | quote }}
-  GOMEMLIMIT: {{ .Values.config.gomemlimit | quote }}
-  GOGC: {{ .Values.config.gogc | quote }}
-
+  PORT: {{ default "8080" (get .Values.env "PORT") | quote }}
+  GRPC_PORT: {{ default "50051" (get .Values.env "GRPC_PORT") | quote }}
+  {{- range $key, $val := .Values.env }}
+  {{- if and (ne $key "secretName") (ne $key "PORT") (ne $key "GRPC_PORT") (ne $val nil) }}
+  {{ $key }}: {{ $val | quote }}
+  {{- end }}
+  {{- end }}
