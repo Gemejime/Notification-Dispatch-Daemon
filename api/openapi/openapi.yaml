@@ -7,8 +7,12 @@ info:
     microservice (rag-notification-dispatch-daemon).
   version: 1.0.0
 servers:
+  - url: http://notifications.rag.internal:8080
+    description: Production Environment Cluster Service (ENVIRONMENT=production)
+  - url: http://notifications-staging.rag.internal:8080
+    description: Staging Environment Cluster Service (ENVIRONMENT=staging)
   - url: http://localhost:8080
-    description: Local / Internal Pod HTTP & SSE Server
+    description: Development Environment HTTP & SSE Server (ENVIRONMENT=development)
 security:
   - bearerAuth: []
 paths:
