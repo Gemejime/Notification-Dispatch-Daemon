@@ -181,3 +181,4 @@ jobs:
         run: |
           NAMESPACE="rag-system"
           kubectl rollout status deployment/rag-notification-dispatch-daemon -n "${NAMESPACE}" --timeout=120s
+

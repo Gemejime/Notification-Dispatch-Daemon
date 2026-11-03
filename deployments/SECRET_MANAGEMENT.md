@@ -208,3 +208,4 @@ In the event of a suspected credential leak:
    kubectl rollout restart deployment/rag-notification-dispatch-daemon -n rag-system
    ```
 4. **Audit Logs Verification**: Review `log/slog` structured output in OpenTelemetry / CloudWatch to ensure no leaked plaintext secrets appear in query strings or exception messages.
+
