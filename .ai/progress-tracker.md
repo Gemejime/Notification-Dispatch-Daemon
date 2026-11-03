@@ -26,6 +26,12 @@
 
 ## Completed Units
 
+- **CI/CD Secret Injection & Secret Management Architecture**:
+  - **Secret Management Architecture (`deployments/SECRET_MANAGEMENT.md`)**:
+    - Comprehensive guide detailing 3 core security invariants, 7-item classification matrix (`REDIS_PASSWORD`, `POSTGRES_PASSWORD`, `POSTGRES_DSN`, `CHANNEL_AUTH_SECRET`, `JWT_PUBLIC_KEY_PEM`, `KUBECONFIG`, `GHCR_PAT`), ASCII secret injection flow, External Secrets Operator (Vault) specification, and zero-downtime rotation / emergency revocation runbooks.
+  - **Automated CI/CD Secret Injection Workflow (`.github/workflows/deploy.yml`)**:
+    - Automated GitHub Actions deployment pipeline featuring pre-deployment drift validation, `::add-mask::` secret masking guard, dynamic Kubernetes `Secret` provisioning (`rag-notification-dispatch-daemon-secrets` in `rag-system`), and Helm upgrade execution with automated rolling restarts.
+
 - **Automated Environment Synchronization & Deployment Enforcement**:
   - **Dynamic Helm ConfigMap Ingestion (`deployments/helm/rag-notification-dispatch-daemon/templates/configmap.yaml`, `deployments/helm/templates/configmap.yaml`)**:
     - Replaced static configuration with dynamic range over `.Values.env`.
