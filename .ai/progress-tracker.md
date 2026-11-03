@@ -26,6 +26,22 @@
 
 ## Completed Units
 
+- **Automated Environment Synchronization & Deployment Enforcement**:
+  - **Dynamic Helm ConfigMap Ingestion (`deployments/helm/rag-notification-dispatch-daemon/templates/configmap.yaml`, `deployments/helm/templates/configmap.yaml`)**:
+    - Replaced static configuration with dynamic range over `.Values.env`.
+    - Preserved fallback ports (`PORT: default "8080"`, `GRPC_PORT: default "50051"`), while filtering out `secretName` and `nil` values.
+  - **Automated Rolling Restarts on Config Change (`deployments/helm/templates/deployment.yaml`)**:
+    - Maintained SHA-256 ConfigMap checksum annotation (`checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}`) in deployment pod metadata to trigger automated rolling restarts upon configuration changes.
+  - **Synchronization & Drift Validation Script (`scripts/sync_env_to_deployments.py`)**:
+    - Implemented CLI supporting `--sync` and `--check-only`.
+    - Excludes sensitive keys containing `PASSWORD`, `SECRET`, `TOKEN`, `KEY` to prevent credential leakage in version control.
+    - Preserves `secretName` and top-level Helm blocks (`image`, `resources`, `keda`, `probes`, etc.).
+    - Robust UTF-8 Windows stdout formatting and automated companion path synchronization (`deployments/helm/values.yaml` and `deployments/helm/rag-notification-dispatch-daemon/values.yaml`).
+  - **Git Pre-Commit Hook (`.git/hooks/pre-commit`)**:
+    - Enforced zero-drift gate executing `python scripts/sync_env_to_deployments.py --check-only` before any commit.
+  - **Developer Documentation (`.env.example`)**:
+    - Updated header documenting `.env.prod` as single source of truth for deployments, distinguishing local `.env` and deployment synchronization commands.
+
 - **Environment Configuration Engine & .env Matrix Synchronization**:
   - **Dynamic .env Discovery & Parser (`internal/infrastructure/config/env.go`)**:
     - Zero-external-dependency standard library parser for `.env` files supporting key-value pairs, `export ` prefixes, double/single quotes, escaped character expansions (`\n`, `\t`, `\r`, `\"`, `\\`), inline comments (`#`), and blank lines.

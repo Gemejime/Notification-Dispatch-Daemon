@@ -502,9 +502,17 @@ CREATE INDEX IF NOT EXISTS idx_event_journal_tenant_occurred ON notification_eve
 
 ---
 
-## 6. 12-Factor Environment Configuration Matrix
+## 6. 12-Factor Environment Configuration Matrix & Deployment Synchronization
 
 The daemon automatically reads `.env` on startup via its zero-dependency dotenv loader, supporting local `.env` and `.env.example` templates, custom file paths via `ENV_FILE`, and dynamic OS override toggles via `DOTENV_OVERRIDE`. Runtime memory limits (`GOMEMLIMIT`) and GC targets (`GOGC`) parsed from `.env` are dynamically applied to the Go runtime.
+
+### Deployment Synchronization & Automated Enforcement
+- **Single Source of Truth**: `.env.prod` is the single source of truth for deployment configurations. Local `.env` is for development only.
+- **Dynamic ConfigMap Ingestion (`configmap.yaml`)**: The Helm ConfigMap dynamically ranges over `.Values.env`, preserving default port bindings (`PORT`, `GRPC_PORT`), ignoring `secretName` and `nil` values.
+- **Rolling Pod Restarts**: `deployment.yaml` embeds a SHA-256 ConfigMap checksum annotation (`checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}`), triggering automated rolling updates on configuration changes.
+- **Automated Sync & Drift Verification**:
+  - `python scripts/sync_env_to_deployments.py --sync`: Ingests `.env.prod` into `deployments/helm/values.yaml` while stripping sensitive credentials (`PASSWORD`, `SECRET`, `TOKEN`, `KEY`) and preserving `secretName` and top-level Helm blocks.
+  - `python scripts/sync_env_to_deployments.py --check-only`: Verifies zero configuration drift between `.env.prod` and Helm values (exits 1 on drift, 0 on clean). Enforced via `.git/hooks/pre-commit`.
 
 | Environment Variable | Default | Required | Description |
 | :--- | :--- | :--- | :--- |
