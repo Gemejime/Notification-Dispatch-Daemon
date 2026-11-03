@@ -27,7 +27,7 @@ test-performance:
 	GOMEMLIMIT=$(GOMEMLIMIT) GOGC=$(GOGC) $(GO) test -v -timeout=10m ./test/performance/...
 
 soak-test:
-	GOMEMLIMIT=$(GOMEMLIMIT) GOGC=$(GOGC) $(GO) test -v -run=TestHighDensityMemorySoakAndThroughput -timeout=15m ./test/performance/...
+	GOMEMLIMIT=$(GOMEMLIMIT) GOGC=$(GOGC) $(GO) test -v -run=TestSyntheticInMemoryHighDensitySoak -timeout=15m ./test/performance/...
 
 docker-build:
 	docker build -f deployments/docker/Dockerfile -t $(IMAGE_TAG) .
@@ -36,9 +36,8 @@ helm-lint:
 	@if command -v helm >/dev/null 2>&1; then \
 		helm lint deployments/helm/rag-notification-dispatch-daemon; \
 	else \
-		echo "helm binary not in PATH, verifying template files existence..."; \
-		test -f deployments/helm/rag-notification-dispatch-daemon/Chart.yaml; \
-		test -f deployments/helm/rag-notification-dispatch-daemon/values.yaml; \
+		echo "helm binary not in PATH, cannot lint helm chart" >&2; \
+		exit 1; \
 	fi
 
 openapi-check:

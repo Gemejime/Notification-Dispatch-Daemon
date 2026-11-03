@@ -50,6 +50,6 @@ spec:
             service: {{ include "rag-notification-dispatch-daemon.name" . }}
           annotations:
             summary: "Daemon heap allocation near OOM ceiling (> 1.8 GiB)"
-            description: "Pod allocated memory exceeds 1.8 GiB for > {{ .Values.prometheusRule.alerts.nearOOMMemorySaturation.duration }}. Risk of cgroup 2GiB OOMKill."
+            description: "Pod allocated heap memory (go_memstats_alloc_bytes) exceeds {{ .Values.prometheusRule.alerts.nearOOMMemorySaturation.thresholdBytes }} bytes for > {{ .Values.prometheusRule.alerts.nearOOMMemorySaturation.duration }}. Risk of cgroup 2GiB OOMKill."
 {{- end }}
 

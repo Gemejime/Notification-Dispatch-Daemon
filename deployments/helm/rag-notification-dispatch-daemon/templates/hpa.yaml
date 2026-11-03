@@ -19,12 +19,14 @@ spec:
         target:
           type: Utilization
           averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+    {{- if and .Values.autoscaling.customMetrics .Values.autoscaling.customMetrics.enabled }}
     - type: Pods
       pods:
         metric:
           name: notification_active_sse_connections
         target:
           type: AverageValue
-          averageValue: {{ .Values.autoscaling.targetActiveConnections }}
+          averageValue: {{ .Values.autoscaling.customMetrics.targetActiveConnections }}
+    {{- end }}
 {{- end }}
 

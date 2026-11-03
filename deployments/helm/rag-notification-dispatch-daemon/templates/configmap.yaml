@@ -17,10 +17,10 @@ data:
   POSTGRES_USER: {{ .Values.config.postgresUser | quote }}
   POSTGRES_MAX_CONNS: {{ .Values.config.postgresMaxConns | quote }}
   SSE_RING_BUFFER_SIZE: {{ .Values.config.sseRingBufferSize | quote }}
-  SSE_HEARTBEAT_SECONDS: {{ .Values.config.sseHeartbeatSeconds | quote }}
-  SLOW_CONSUMER_TIMEOUT_SECONDS: {{ .Values.config.slowConsumerTimeoutSeconds | quote }}
-  DRAIN_JITTER_MIN_SECONDS: {{ .Values.config.drainJitterMinSeconds | quote }}
-  DRAIN_JITTER_MAX_SECONDS: {{ .Values.config.drainJitterMaxSeconds | quote }}
+  SSE_HEARTBEAT_INTERVAL: {{ printf "%ss" (.Values.config.sseHeartbeatSeconds | toString) | quote }}
+  SSE_SLOW_CONSUMER_TIMEOUT: {{ printf "%ss" (.Values.config.slowConsumerTimeoutSeconds | toString) | quote }}
+  DRAIN_JITTER_MIN: {{ printf "%ss" (.Values.config.drainJitterMinSeconds | toString) | quote }}
+  DRAIN_JITTER_MAX: {{ printf "%ss" (.Values.config.drainJitterMaxSeconds | toString) | quote }}
   REPLAY_BUFFER_MAXLEN: {{ .Values.config.replayBufferMaxlen | quote }}
   RATE_LIMIT_TOKENS_PER_SEC: {{ .Values.config.rateLimitTokensPerSec | quote }}
   RATE_LIMIT_BURST: {{ .Values.config.rateLimitBurst | quote }}

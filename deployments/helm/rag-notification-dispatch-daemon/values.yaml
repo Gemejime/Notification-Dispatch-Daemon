@@ -73,8 +73,12 @@ autoscaling:
   minReplicas: 3
   maxReplicas: 10
   targetCPUUtilizationPercentage: 65
-  # Connection density ceiling: <= 15,000 active SSE streams per pod
-  targetActiveConnections: 15000
+  # Custom metrics adapter prerequisite: requires a Prometheus Adapter / custom-metrics.k8s.io API installed in the cluster.
+  # Gated behind customMetrics.enabled, defaulting to false to preserve CPU autoscaling by default.
+  customMetrics:
+    enabled: false
+    # Connection density ceiling: <= 15,000 active SSE streams per pod
+    targetActiveConnections: 15000
 
 podDisruptionBudget:
   enabled: true

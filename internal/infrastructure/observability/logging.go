@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -160,10 +161,12 @@ type MetricsRegistry struct {
 	mu                   sync.RWMutex
 	activeSSEConnections map[string]int64
 	eventsProcessedTotal map[string]uint64
+	eventsEmittedTotal   map[string]uint64
 	droppedFramesTotal   map[string]uint64
 	webhookEnqueuedTotal map[string]uint64
 	cacheInvalidations   map[string]uint64
 	clientWriteLatency   map[string]*histogramSeries
+	cdcConsumerLag       int64
 }
 
 // NewMetricsRegistry creates a new thread-safe Prometheus MetricsRegistry.
@@ -171,6 +174,7 @@ func NewMetricsRegistry() *MetricsRegistry {
 	return &MetricsRegistry{
 		activeSSEConnections: make(map[string]int64),
 		eventsProcessedTotal: make(map[string]uint64),
+		eventsEmittedTotal:   make(map[string]uint64),
 		droppedFramesTotal:   make(map[string]uint64),
 		webhookEnqueuedTotal: make(map[string]uint64),
 		cacheInvalidations:   make(map[string]uint64),
@@ -255,6 +259,42 @@ func (m *MetricsRegistry) DroppedFramesCount(tenantID, reason string) uint64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.droppedFramesTotal[key]
+}
+
+// IncEventsEmitted increments notification_events_emitted_total{tenant_id}.
+func (m *MetricsRegistry) IncEventsEmitted(tenantID string) {
+	if tenantID == "" {
+		tenantID = "unknown"
+	}
+	key := fmt.Sprintf(`tenant_id=%q`, tenantID)
+	m.mu.Lock()
+	m.eventsEmittedTotal[key]++
+	m.mu.Unlock()
+}
+
+// EventsEmittedCount returns the current counter value for notification_events_emitted_total{tenant_id}.
+func (m *MetricsRegistry) EventsEmittedCount(tenantID string) uint64 {
+	if tenantID == "" {
+		tenantID = "unknown"
+	}
+	key := fmt.Sprintf(`tenant_id=%q`, tenantID)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.eventsEmittedTotal[key]
+}
+
+// SetCDCConsumerLag sets the notification_cdc_consumer_lag gauge.
+func (m *MetricsRegistry) SetCDCConsumerLag(lag int64) {
+	m.mu.Lock()
+	m.cdcConsumerLag = lag
+	m.mu.Unlock()
+}
+
+// CDCConsumerLag returns the current notification_cdc_consumer_lag gauge.
+func (m *MetricsRegistry) CDCConsumerLag() int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.cdcConsumerLag
 }
 
 // IncWebhookEnqueued increments notification_webhook_enqueued_total{tenant_id, status}.
@@ -350,6 +390,24 @@ func (m *MetricsRegistry) RenderPrometheusText() string {
 	b.WriteString("# HELP notification_cache_invalidations_total Total pod-local subscription cache invalidation events processed.\n")
 	b.WriteString("# TYPE notification_cache_invalidations_total counter\n")
 	writeSortedUint64Map(&b, "notification_cache_invalidations_total", m.cacheInvalidations)
+
+	b.WriteString("# HELP notification_events_emitted_total Total SSE notification frames successfully emitted to clients.\n")
+	b.WriteString("# TYPE notification_events_emitted_total counter\n")
+	writeSortedUint64Map(&b, "notification_events_emitted_total", m.eventsEmittedTotal)
+
+	b.WriteString("# HELP notification_cdc_consumer_lag CDC milestone outbox consumer offset lag in records.\n")
+	b.WriteString("# TYPE notification_cdc_consumer_lag gauge\n")
+	b.WriteString("notification_cdc_consumer_lag ")
+	b.WriteString(strconv.FormatInt(m.cdcConsumerLag, 10))
+	b.WriteByte('\n')
+
+	var memStats runtime.MemStats
+	runtime.ReadMemStats(&memStats)
+	b.WriteString("# HELP go_memstats_alloc_bytes Number of bytes allocated and still in use.\n")
+	b.WriteString("# TYPE go_memstats_alloc_bytes gauge\n")
+	b.WriteString("go_memstats_alloc_bytes ")
+	b.WriteString(strconv.FormatUint(memStats.Alloc, 10))
+	b.WriteByte('\n')
 
 	return b.String()
 }

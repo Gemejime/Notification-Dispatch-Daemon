@@ -2,6 +2,8 @@
 # Stage 1: Build binary using official Go 1.23 toolchain
 FROM golang:1.23-bookworm AS builder
 
+ARG TARGETARCH
+
 WORKDIR /build
 
 # Copy dependency manifests first for build caching
@@ -12,7 +14,7 @@ RUN go mod download
 COPY . .
 
 # Compile statically linked binary with stripped debug symbols and path trimming
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
     -trimpath \
     -ldflags="-s -w -X main.version=1.0.0" \
     -o /build/bin/notification-daemon \

@@ -240,6 +240,7 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+      description: Signed JWT bearer token with validated signature, exp, iss (rag-auth-service), and aud (rag-notification-dispatch-daemon) claims.
   schemas:
     SSENotificationFrame:
       type: object

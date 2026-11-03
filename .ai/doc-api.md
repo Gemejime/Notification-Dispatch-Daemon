@@ -494,6 +494,9 @@ CREATE INDEX IF NOT EXISTS idx_event_journal_tenant_occurred ON notification_eve
 | `notification_events_processed_total` | Counter | `event_type`, `status` | Alert if Kafka/Redis consumer lag $> 5,000$ records for $> 2\text{m}$ |
 | `notification_client_write_latency_seconds` | Histogram | `node_id` | Target $P99 \le 10\text{ms}$; Alert if $P99 > 50\text{ms}$ over $3\text{m}$ window |
 | `notification_dropped_frames_total` | Counter | `tenant_id`, `reason` | Alert if dropped frames $> 1\%$ of total emitted frames across an active tenant |
+| `notification_events_emitted_total` | Counter | `tenant_id` | Total SSE notification frames successfully emitted to clients |
+| `notification_cdc_consumer_lag` | Gauge | — | Alert if CDC consumer lag exceeds configured threshold records |
+| `go_memstats_alloc_bytes` | Gauge | — | Go runtime heap allocation in bytes; alert if $> 1.8\text{GiB}$ near OOM ceiling |
 | `notification_webhook_enqueued_total` | Counter | `tenant_id`, `status` | Target hand-off latency $P99 \le 15\text{ms}$ |
 | `notification_cache_invalidations_total` | Counter | `reason` | Coherence propagation $\le 100\text{ms}$ |
 
@@ -523,6 +526,8 @@ The daemon automatically reads `.env` on startup via its zero-dependency dotenv 
 | `DRAIN_JITTER_MIN` | `30s` | Yes | Minimum SIGTERM staggered drain window (`terminationGracePeriodSeconds: 75`) |
 | `DRAIN_JITTER_MAX` | `60s` | Yes | Maximum SIGTERM staggered drain window (`terminationGracePeriodSeconds: 75`) |
 | `JWT_PUBLIC_KEY_PEM` | — | Yes (Secret) | Public key / JWKS reference for verifying SSE channel bearer tokens |
+| `JWT_ISSUER` | `rag-auth-service` | Yes | Expected JWT issuer (`iss`) claim for channel authorization |
+| `JWT_AUDIENCE` | `rag-notification-dispatch-daemon` | Yes | Expected JWT audience (`aud`) claim for channel authorization |
 | `LOG_LEVEL` | `INFO` | No | `slog` JSON logging threshold (`DEBUG`, `INFO`, `WARN`, `ERROR`) |
 | `ENV_FILE` | `.env` | No | Optional explicit filesystem path to .env configuration file |
 | `DOTENV_OVERRIDE` | `true` | No | Whether values defined in .env override pre-existing OS environment variables (`true`/`false`) |

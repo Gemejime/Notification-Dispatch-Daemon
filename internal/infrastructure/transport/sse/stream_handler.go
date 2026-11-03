@@ -231,6 +231,9 @@ func (h *StreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				h.logger.Debug("client disconnected during replay backfill", slog.String("connection_id", connectionID))
 				return
 			}
+			if h.metrics != nil {
+				h.metrics.IncEventsEmitted(tenantID)
+			}
 		}
 	}
 
@@ -286,6 +289,9 @@ func (h *StreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						slog.String("error", writeErr.Error()),
 					)
 					return
+				}
+				if h.metrics != nil {
+					h.metrics.IncEventsEmitted(tenantID)
 				}
 			}
 
