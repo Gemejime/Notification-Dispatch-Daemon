@@ -129,9 +129,9 @@ func (r *TargetedRouter) DispatchSSEFrame(ctx context.Context, event entity.Noti
 				slog.String("user_id", event.UserID),
 				slog.String("error", err.Error()),
 			)
-			return fmt.Errorf("get target nodes for presence: %w", err)
+		} else {
+			targetNodes = nodes
 		}
-		targetNodes = nodes
 	}
 
 	// Always ensure local hub receives event if local connections match
@@ -196,7 +196,7 @@ func (r *TargetedRouter) DispatchSSEFrame(ctx context.Context, event entity.Noti
 				slog.String("event_id", event.EventID),
 				slog.String("error", err.Error()),
 			)
-			return fmt.Errorf("publish routed event to remote pod %s: %w", nodeID, err)
+			continue
 		}
 	}
 

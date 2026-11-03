@@ -29,16 +29,21 @@ func LoadEnv(filenames ...string) error {
 func LoadEnvWithOverride(override bool, filenames ...string) error {
 	if len(filenames) == 0 {
 		envPath := os.Getenv("ENV_FILE")
-		if envPath == "" {
+		if envPath != "" {
+			if _, err := os.Stat(envPath); err != nil {
+				return fmt.Errorf("explicitly supplied env file %s does not exist: %w", envPath, err)
+			}
+			filenames = []string{envPath}
+		} else {
 			cwd, err := os.Getwd()
 			if err == nil {
 				envPath = FindEnvFile(cwd)
 			}
+			if envPath == "" {
+				return nil // No .env file found; proceed silently with standard env / defaults
+			}
+			filenames = []string{envPath}
 		}
-		if envPath == "" {
-			return nil // No .env file found; proceed silently with standard env / defaults
-		}
-		filenames = []string{envPath}
 	}
 
 	for _, filename := range filenames {
@@ -72,7 +77,7 @@ func LoadEnvWithOverride(override bool, filenames ...string) error {
 // FindEnvFile traverses from startDir upwards to locate .env up to the repository boundary (where go.mod lives).
 func FindEnvFile(startDir string) string {
 	dir := startDir
-	for i := 0; i < 6; i++ {
+	for {
 		candidate := filepath.Join(dir, ".env")
 		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
 			return candidate
@@ -230,4 +235,3 @@ func ParseGCPercent(raw string, defaultVal int) int {
 	}
 	return val
 }
-

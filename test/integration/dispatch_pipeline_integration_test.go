@@ -207,6 +207,19 @@ func TestDispatchPipelineEndToEnd(t *testing.T) {
 		t.Fatalf("expected presence directory to map userBeta to [%s], got %v (err: %v)", podBName, nodesForUser, err)
 	}
 
+	// Seed predecessor event so watermark cursor exists in both journal implementations
+	_ = journalRepo.AppendEvent(ctx, entity.NotificationEvent{
+		EventID:       "01J9Z8K4_E2E_000",
+		TenantID:      tenantID,
+		UserID:        userBeta,
+		SourceService: "rag-ingestion-coordinator",
+		EventType:     entity.EventTypeIngestionMilestone,
+		Severity:      entity.SeverityInfo,
+		IsTerminal:    false,
+		OccurredAt:    time.Now().Add(-5 * time.Second),
+		PayloadJSON:   []byte(`{"stage":"INIT"}`),
+	})
+
 	// 6. Ingest CDC event on Pod A (routed to Pod B, pushed to client, webhook enqueued)
 	eventID := "01J9Z8K4_E2E_001"
 	envelope := &notificationv1.NotificationEventEnvelope{

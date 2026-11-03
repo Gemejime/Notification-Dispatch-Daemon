@@ -9,7 +9,7 @@
 
 ## Current Goal
 
-- Service is fully production-ready with all 4 architectural phases completed, benchmarked, and chaos-tested: sustained 20,000 active connections per node (< 1.6GiB RSS), zero-allocation hot-path dispatch, 2,000 Slow-Loris stalled consumer eviction, SIGTERM staggered graceful draining with randomized reconnection jitter [30s, 60s], multi-stage distroless containerization (`gcr.io/distroless/static:nonroot`), and declarative Kubernetes Helm v3 / ArgoCD GitOps packaging.
+- Service is fully production-ready with all 4 architectural phases completed, benchmarked, and chaos-tested: 20,000-session in-memory mock soak kept heap Alloc under 1.6 GiB, loopback TCP soak used 5,000 sockets, zero-allocation hot-path dispatch, 2,000 Slow-Loris stalled consumer eviction, SIGTERM staggered graceful draining with randomized reconnection jitter [30s, 60s], multi-stage distroless containerization (`gcr.io/distroless/static:nonroot`), and declarative Kubernetes Helm v3 / ArgoCD GitOps packaging.
 
 ---
 

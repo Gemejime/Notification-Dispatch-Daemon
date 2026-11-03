@@ -160,16 +160,26 @@ func (a SimpleTokenAuthenticator) Authenticate(token string) (string, string, er
 	return tenantID, userID, nil
 }
 
-// JWTAuthenticator verifies JSON Web Tokens using a PEM-encoded public key.
+// JWTAuthenticator verifies JSON Web Tokens using a PEM-encoded public key,
+// enforcing signature verification, expiration, and expected issuer/audience matching.
 type JWTAuthenticator struct {
-	publicKey crypto.PublicKey
+	publicKey        crypto.PublicKey
+	expectedIssuer   string
+	expectedAudience string
 }
 
-// NewJWTAuthenticator initializes a JWTAuthenticator by parsing a PEM-encoded RSA, ECDSA, or Ed25519 public key.
-func NewJWTAuthenticator(publicKeyPEM string) (*JWTAuthenticator, error) {
+// NewJWTAuthenticator initializes a JWTAuthenticator by parsing a PEM-encoded RSA, ECDSA, or Ed25519 public key,
+// and configuring required expected issuer and audience claims.
+func NewJWTAuthenticator(publicKeyPEM, expectedIssuer, expectedAudience string) (*JWTAuthenticator, error) {
 	trimmed := strings.TrimSpace(publicKeyPEM)
 	if trimmed == "" {
-		return &JWTAuthenticator{}, nil
+		return nil, errors.New("jwt public key pem must not be empty")
+	}
+	if strings.TrimSpace(expectedIssuer) == "" {
+		return nil, errors.New("jwt expected issuer must not be empty")
+	}
+	if strings.TrimSpace(expectedAudience) == "" {
+		return nil, errors.New("jwt expected audience must not be empty")
 	}
 	block, _ := pem.Decode([]byte(trimmed))
 	if block == nil {
@@ -178,11 +188,19 @@ func NewJWTAuthenticator(publicKeyPEM string) (*JWTAuthenticator, error) {
 	pub, err := x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
 		if rsaPub, rsaErr := x509.ParsePKCS1PublicKey(block.Bytes); rsaErr == nil {
-			return &JWTAuthenticator{publicKey: rsaPub}, nil
+			return &JWTAuthenticator{
+				publicKey:        rsaPub,
+				expectedIssuer:   strings.TrimSpace(expectedIssuer),
+				expectedAudience: strings.TrimSpace(expectedAudience),
+			}, nil
 		}
 		return nil, fmt.Errorf("parse jwt public key: %w", err)
 	}
-	return &JWTAuthenticator{publicKey: pub}, nil
+	return &JWTAuthenticator{
+		publicKey:        pub,
+		expectedIssuer:   strings.TrimSpace(expectedIssuer),
+		expectedAudience: strings.TrimSpace(expectedAudience),
+	}, nil
 }
 
 // Authenticate verifies the JWT signature and extracts tenant_id and user_id claims.
@@ -255,13 +273,23 @@ func (a *JWTAuthenticator) Authenticate(token string) (string, string, error) {
 		UserID   string `json:"user_id"`
 		Sub      string `json:"sub"`
 		Exp      int64  `json:"exp"`
+		Iss      string `json:"iss"`
+		Aud      any    `json:"aud"`
 	}
 	if err := json.Unmarshal(payloadBytes, &claims); err != nil {
 		return "", "", fmt.Errorf("unmarshal jwt claims: %w", err)
 	}
 
-	if claims.Exp > 0 && time.Now().Unix() > claims.Exp {
+	if claims.Exp > 0 && time.Now().Unix() >= claims.Exp {
 		return "", "", errors.New("jwt expired")
+	}
+
+	if a.expectedIssuer != "" && claims.Iss != a.expectedIssuer {
+		return "", "", fmt.Errorf("invalid jwt issuer: expected %q, got %q", a.expectedIssuer, claims.Iss)
+	}
+
+	if a.expectedAudience != "" && !matchAudience(claims.Aud, a.expectedAudience) {
+		return "", "", fmt.Errorf("invalid jwt audience: expected %q", a.expectedAudience)
 	}
 
 	tenantID := claims.TenantID
@@ -273,6 +301,26 @@ func (a *JWTAuthenticator) Authenticate(token string) (string, string, error) {
 	}
 
 	return tenantID, claims.UserID, nil
+}
+
+func matchAudience(audClaim any, expectedAud string) bool {
+	switch v := audClaim.(type) {
+	case string:
+		return v == expectedAud
+	case []any:
+		for _, item := range v {
+			if s, ok := item.(string); ok && s == expectedAud {
+				return true
+			}
+		}
+	case []string:
+		for _, s := range v {
+			if s == expectedAud {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // AuthMiddleware enforces Bearer authentication and injects TenantID and UserID into the request context.

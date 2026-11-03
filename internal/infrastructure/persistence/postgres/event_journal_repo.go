@@ -27,12 +27,26 @@ SELECT event_id, tenant_id, user_id, source_service, event_type,
        severity, is_terminal, payload_json, occurred_at
 FROM notification_event_journal
 WHERE tenant_id = $1
-  AND ($2 = '' OR (occurred_at, event_id) > (
-      SELECT COALESCE(occurred_at, '1970-01-01'::timestamptz), event_id
-      FROM notification_event_journal
-      WHERE event_id = $2 AND tenant_id = $1
-      LIMIT 1
-  ))
+  AND (
+      $2 = ''
+      OR (
+          EXISTS (
+              SELECT 1 FROM notification_event_journal
+              WHERE event_id = $2 AND tenant_id = $1
+          ) AND (occurred_at, event_id) > (
+              SELECT COALESCE(occurred_at, '1970-01-01'::timestamptz), event_id
+              FROM notification_event_journal
+              WHERE event_id = $2 AND tenant_id = $1
+              LIMIT 1
+          )
+      )
+      OR (
+          NOT EXISTS (
+              SELECT 1 FROM notification_event_journal
+              WHERE event_id = $2 AND tenant_id = $1
+          ) AND event_id > $2
+      )
+  )
 ORDER BY occurred_at ASC, event_id ASC
 LIMIT $3`
 )

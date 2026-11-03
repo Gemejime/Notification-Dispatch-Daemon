@@ -44,7 +44,10 @@ GOGC=65
 	t.Setenv("ENV_FILE", envPath)
 	t.Setenv("DOTENV_OVERRIDE", "true")
 
-	cfg1 := LoadConfig()
+	cfg1, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("failed to load initial config: %v", err)
+	}
 
 	if cfg1.NodeID != "node-env-affected-01" {
 		t.Errorf("NodeID: got %q, want %q", cfg1.NodeID, "node-env-affected-01")
@@ -113,7 +116,10 @@ GOGC=100
 		t.Fatalf("failed to update .env: %v", err)
 	}
 
-	cfg2 := LoadConfig()
+	cfg2, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("failed to load updated config: %v", err)
+	}
 
 	if cfg2.NodeID != "node-env-affected-02" {
 		t.Errorf("modified NodeID: got %q, want %q", cfg2.NodeID, "node-env-affected-02")
@@ -142,4 +148,3 @@ GOGC=100
 		t.Errorf("modified GOGC: got %d, want 100", parsedGC)
 	}
 }
-

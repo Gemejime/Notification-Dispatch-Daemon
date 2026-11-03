@@ -341,8 +341,17 @@ func TestZeroIntermediarySSEFrameFormatting(t *testing.T) {
 	if strings.Contains(multilineData, "\n") {
 		t.Fatalf("expected compacted single-line SSE data JSON, got newline in: %q", multilineData)
 	}
-	if !strings.Contains(multilineData, `"document_id":"doc_99"`) || !strings.Contains(multilineData, `"stage":"CHUNK_COMPILATION"`) {
-		t.Fatalf("expected multilineData to preserve payload fields, got: %s", multilineData)
+	var parsedMultilineFrame struct {
+		Payload struct {
+			DocumentID string `json:"document_id"`
+			Stage      string `json:"stage"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(multilineData), &parsedMultilineFrame); err != nil {
+		t.Fatalf("failed to decode compacted multiline SSE JSON: %v", err)
+	}
+	if parsedMultilineFrame.Payload.DocumentID != "doc_99" || parsedMultilineFrame.Payload.Stage != "CHUNK_COMPILATION" {
+		t.Fatalf("expected payload document_id doc_99 and stage CHUNK_COMPILATION, got: %+v", parsedMultilineFrame.Payload)
 	}
 	if strings.Contains(string(evMultiline.FormatSSEDataJSON()), "\n") {
 		t.Fatalf("expected FormatSSEDataJSON to compact multiline payload onto a single line")

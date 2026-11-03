@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/rand/v2"
 	"net/http"
@@ -61,12 +62,16 @@ type Config struct {
 	DrainJitterMin       time.Duration
 	DrainJitterMax       time.Duration
 	JWTPublicKeyPEM      observability.SecretString
+	JWTIssuer            string
+	JWTAudience          string
 	LogLevel             slog.Level
 }
 
 // LoadConfig loads 12-Factor configuration from .env and environment variables with canonical defaults.
-func LoadConfig() Config {
-	_ = config.LoadEnv()
+func LoadConfig() (Config, error) {
+	if err := config.LoadEnv(); err != nil {
+		return Config{}, fmt.Errorf("load env: %w", err)
+	}
 	ConfigureRuntimeMemoryBounds()
 
 	hostname, err := os.Hostname()
@@ -89,8 +94,10 @@ func LoadConfig() Config {
 		DrainJitterMin:       envDurationOrDefault("DRAIN_JITTER_MIN", 30*time.Second),
 		DrainJitterMax:       envDurationOrDefault("DRAIN_JITTER_MAX", 60*time.Second),
 		JWTPublicKeyPEM:      observability.NewSecretString(os.Getenv("JWT_PUBLIC_KEY_PEM")),
+		JWTIssuer:            envOrDefault("JWT_ISSUER", "rag-auth-service"),
+		JWTAudience:          envOrDefault("JWT_AUDIENCE", "rag-notification-dispatch-daemon"),
 		LogLevel:             observability.ParseLogLevel(envOrDefault("LOG_LEVEL", "INFO")),
-	}
+	}, nil
 }
 
 // ConfigureRuntimeMemoryBounds enforces GOMEMLIMIT (default 1800MiB) and GOGC (default 80),
@@ -326,7 +333,12 @@ func ComputeDrainDelay(minJitter, maxJitter time.Duration) time.Duration {
 }
 
 func main() {
-	cfg := LoadConfig()
+	cfg, err := LoadConfig()
+	if err != nil {
+		logger := observability.NewSecuredLogger(os.Stderr, slog.LevelError)
+		logger.Error("failed to load configuration", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
 	ConfigureRuntimeMemoryBounds()
 	logger := observability.NewSecuredLogger(os.Stdout, cfg.LogLevel)
 	metrics := observability.NewMetricsRegistry()
@@ -457,16 +469,16 @@ func main() {
 	var draining atomic.Bool
 
 	var authenticator middleware.Authenticator
-	if cfg.JWTPublicKeyPEM.Unmasked() != "" {
-		jwtAuth, err := middleware.NewJWTAuthenticator(cfg.JWTPublicKeyPEM.Unmasked())
-		if err != nil {
-			logger.Error("failed to parse jwt public key pem", slog.String("error", err.Error()))
-			os.Exit(1)
-		}
-		authenticator = jwtAuth
-	} else {
-		authenticator = middleware.SimpleTokenAuthenticator{}
+	if cfg.JWTPublicKeyPEM.Unmasked() == "" {
+		logger.Error("JWT_PUBLIC_KEY_PEM must be configured; running with fallback authenticator is disabled")
+		os.Exit(1)
 	}
+	jwtAuth, err := middleware.NewJWTAuthenticator(cfg.JWTPublicKeyPEM.Unmasked(), cfg.JWTIssuer, cfg.JWTAudience)
+	if err != nil {
+		logger.Error("failed to parse jwt public key pem", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	authenticator = jwtAuth
 
 	routerHandler := transporthttp.NewRouter(transporthttp.RouterConfig{
 		Cache:    subCache,

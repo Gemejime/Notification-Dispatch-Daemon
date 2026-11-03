@@ -223,8 +223,11 @@ func TestSIGTERMGracefulDrainingReadinessAndJitter(t *testing.T) {
 		}
 	}
 
-	if retryDirectivesReceived == 0 {
-		t.Fatal("expected active streams to receive retry directive frames before closure")
+	if retryDirectivesReceived != len(results) {
+		t.Fatalf("expected all %d active streams to receive retry directive frames before closure, got %d", len(results), retryDirectivesReceived)
+	}
+	if maxClose <= minClose {
+		t.Fatalf("expected staggered close-time spread to be nonzero, got minClose=%v, maxClose=%v", minClose, maxClose)
 	}
 
 	t.Logf("graceful drain verified: %d/%d received retry directives, staggered close spread across %v (min: %v, max: %v)",

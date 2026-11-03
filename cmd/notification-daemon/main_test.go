@@ -22,7 +22,10 @@ import (
 func TestOperationalProbesAndConfig(t *testing.T) {
 	t.Setenv("SSE_RING_BUFFER_SIZE", "")
 	ConfigureRuntimeMemoryBounds()
-	cfg := LoadConfig()
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
 	if cfg.HTTPPort == "" {
 		t.Fatalf("expected default HTTPPort to be populated")
 	}
@@ -142,6 +145,26 @@ func TestOperationalProbesAndConfig(t *testing.T) {
 	mux.ServeHTTP(recSessions, reqSessions)
 	if recSessions.Code != http.StatusOK {
 		t.Fatalf("expected /v1/notifications/sessions 200, got %d", recSessions.Code)
+	}
+
+	// Seed nonempty rules for tnt_01 before invalidation
+	cache.ReplaceTenantRules("tnt_01", []entity.Subscription{
+		{
+			SubscriptionID: "sub_test_01",
+			TenantID:       "tnt_01",
+			SSEEnabled:     true,
+		},
+	}, []entity.WebhookTarget{
+		{
+			TargetID:  "tgt_test_01",
+			TenantID:  "tnt_01",
+			TargetURL: "https://webhook.internal/test",
+			Active:    true,
+		},
+	})
+	preSubs, preTargets := cache.GetTenantRules("tnt_01")
+	if len(preSubs) == 0 || len(preTargets) == 0 {
+		t.Fatalf("expected seeded rules for tnt_01 to be present before invalidation, got %d subs and %d targets", len(preSubs), len(preTargets))
 	}
 
 	reqInv := httptest.NewRequest(http.MethodPost, "/v1/notifications/subscriptions/invalidate", strings.NewReader(`{"tenant_id":"tnt_01","reason":"rule_change"}`))

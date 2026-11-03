@@ -207,7 +207,11 @@ func (h *FetchReplayEventsHandler) Handle(
 	// 3. Fall back to PostgreSQL event journal if Redis stream has no events or lastEventID predates stream window
 	var journalErr error
 	if len(events) < q.Limit && hasJournal {
-		jCursor := cursor
+		seen := make(map[string]struct{}, len(events))
+		for _, ev := range events {
+			seen[ev.EventID] = struct{}{}
+		}
+		jCursor := q.LastEventID
 		for len(events) < q.Limit {
 			journalEvents, jErr := h.journalRepo.FetchReplayAfter(ctx, q.TenantID, jCursor, q.Limit)
 			if jErr != nil {
@@ -224,7 +228,11 @@ func (h *FetchReplayEventsHandler) Handle(
 			}
 			for _, ev := range journalEvents {
 				jCursor = ev.EventID
+				if _, alreadySeen := seen[ev.EventID]; alreadySeen {
+					continue
+				}
 				if q.UserID == "" || ev.UserID == "" || ev.UserID == q.UserID {
+					seen[ev.EventID] = struct{}{}
 					events = append(events, ev)
 					if len(events) >= q.Limit {
 						break
@@ -232,6 +240,11 @@ func (h *FetchReplayEventsHandler) Handle(
 				}
 			}
 		}
+	}
+
+	// If events have been collected and the journal query failed, signal retry to the client
+	if len(events) > 0 && journalErr != nil {
+		return FetchReplayEventsResult{}, fmt.Errorf("journal replay query failed: %w", journalErr)
 	}
 
 	// If every eligible replay source failed, return error
