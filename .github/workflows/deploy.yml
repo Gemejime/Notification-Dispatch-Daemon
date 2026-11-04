@@ -39,6 +39,7 @@ jobs:
           if [ ! -f .env.prod ]; then
             echo "[INFO] .env.prod is gitignored; using .env.example as validation baseline."
             cp .env.example .env.prod
+            sed -i 's/^ENVIRONMENT=development/ENVIRONMENT=production/' .env.prod
           fi
 
       - name: Verify Zero Drift (.env.prod vs values.yaml)
@@ -80,11 +81,13 @@ jobs:
 
       - name: Configure Kubeconfig
         id: kubeconfig
+        env:
+          KUBECONFIG_DATA: ${{ secrets.KUBECONFIG }}
         run: |
-          if [ -n "${{ secrets.KUBECONFIG }}" ]; then
-            mkdir -p $HOME/.kube
-            echo "${{ secrets.KUBECONFIG }}" > $HOME/.kube/config
-            chmod 600 $HOME/.kube/config
+          if [ -n "$KUBECONFIG_DATA" ]; then
+            mkdir -p "$HOME/.kube"
+            printf '%s\n' "$KUBECONFIG_DATA" > "$HOME/.kube/config"
+            chmod 600 "$HOME/.kube/config"
             echo "configured=true" >> "$GITHUB_OUTPUT"
             echo "Kubeconfig configured from repository secrets."
           else
@@ -93,6 +96,7 @@ jobs:
           fi
 
       - name: Provision Kubernetes Secret (Inject Credentials)
+        id: provision_secrets
         env:
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
@@ -104,12 +108,30 @@ jobs:
           RELEASE_NAME="rag-notification-dispatch-daemon"
           SECRET_NAME="rag-notification-dispatch-daemon-secrets"
 
-          # Fallbacks for CI dry-run validation if secrets are unconfigured
-          REDIS_PASS="${REDIS_PASSWORD:-ci-placeholder-redis-pass}"
-          PG_PASS="${POSTGRES_PASSWORD:-ci-placeholder-pg-pass}"
-          PG_DSN="${POSTGRES_DSN:-postgres://rag_daemon_app:${PG_PASS}@pgbouncer.postgres.svc.cluster.local:6432/rag_notifications?sslmode=verify-full}"
-          CHANNEL_SECRET="${CHANNEL_AUTH_SECRET:-ci-placeholder-channel-secret}"
-          JWT_PUB_KEY="${JWT_PUBLIC_KEY_PEM:-ci-placeholder-jwt-public-key}"
+          if [ -f "$HOME/.kube/config" ]; then
+            for secret_var in REDIS_PASSWORD POSTGRES_PASSWORD POSTGRES_DSN CHANNEL_AUTH_SECRET JWT_PUBLIC_KEY_PEM; do
+              if [ -z "${!secret_var}" ]; then
+                echo "ERROR: Required production secret ${secret_var} is unset or empty."
+                exit 1
+              fi
+            done
+            REDIS_PASS="${REDIS_PASSWORD}"
+            PG_PASS="${POSTGRES_PASSWORD}"
+            PG_DSN="${POSTGRES_DSN}"
+            CHANNEL_SECRET="${CHANNEL_AUTH_SECRET}"
+            JWT_PUB_KEY="${JWT_PUBLIC_KEY_PEM}"
+          else
+            echo "[DRY-RUN] Populating placeholders for dry-run manifest compilation..."
+            REDIS_PASS="${REDIS_PASSWORD:-ci-placeholder-redis-pass}"
+            PG_PASS="${POSTGRES_PASSWORD:-ci-placeholder-pg-pass}"
+            PG_DSN="${POSTGRES_DSN:-postgres://rag_daemon_app:${PG_PASS}@pgbouncer.postgres.svc.cluster.local:6432/rag_notifications?sslmode=verify-full}"
+            CHANNEL_SECRET="${CHANNEL_AUTH_SECRET:-ci-placeholder-channel-secret}"
+            JWT_PUB_KEY="${JWT_PUBLIC_KEY_PEM:-ci-placeholder-jwt-public-key}"
+          fi
+
+          # Compute stable sha256 checksum of secret payload to trigger pod restart on rotation (Item 3)
+          SECRET_CHECKSUM=$(printf '%s:%s:%s:%s:%s' "$REDIS_PASS" "$PG_PASS" "$PG_DSN" "$CHANNEL_SECRET" "$JWT_PUB_KEY" | sha256sum | awk '{print $1}')
+          echo "secret_checksum=${SECRET_CHECKSUM}" >> "$GITHUB_OUTPUT"
 
           SECRET_ARGS=(
             "--from-literal=REDIS_PASSWORD=${REDIS_PASS}"
@@ -138,16 +160,48 @@ jobs:
             echo "[DRY-RUN] Secret manifest successfully compiled without leaking credentials."
           fi
 
+      - name: Build and Push Container Image
+        id: docker_build
+        env:
+          GHCR_PAT: ${{ secrets.GHCR_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          IMAGE_REPO=$(echo "ghcr.io/${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_TAG="${{ github.sha }}"
+
+          echo "[BUILD] Building container image ${IMAGE_REPO}:${IMAGE_TAG}..."
+          docker build -f deployments/docker/Dockerfile -t "${IMAGE_REPO}:${IMAGE_TAG}" -t "${IMAGE_REPO}:latest" .
+
+          AUTH_TOKEN="${GHCR_PAT:-$GITHUB_TOKEN}"
+          if [ -n "$AUTH_TOKEN" ]; then
+            echo "[AUTH] Authenticating to GitHub Container Registry (ghcr.io)..."
+            echo "$AUTH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+            echo "[PUSH] Pushing image ${IMAGE_REPO}:${IMAGE_TAG}..."
+            docker push "${IMAGE_REPO}:${IMAGE_TAG}"
+            docker push "${IMAGE_REPO}:latest"
+          else
+            echo "[WARN] No GHCR_PAT or GITHUB_TOKEN available; skipping container push."
+          fi
+
       - name: Deploy Helm Chart with Injected Secret Bindings
         env:
-          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
-          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          SECRET_CHECKSUM: ${{ steps.provision_secrets.outputs.secret_checksum }}
         run: |
           NAMESPACE="rag-system"
           RELEASE_NAME="rag-notification-dispatch-daemon"
           TARGET_ENV="${{ inputs.environment || 'production' }}"
+          IMAGE_REPO=$(echo "ghcr.io/${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE_TAG="${{ github.sha }}"
 
-          HELM_EXTRA_ARGS=()
+          HELM_EXTRA_ARGS=(
+            "--set" "secret.create=false"
+            "--set" "image.repository=${IMAGE_REPO}"
+            "--set" "image.tag=${IMAGE_TAG}"
+          )
+
+          if [ -n "$SECRET_CHECKSUM" ]; then
+            HELM_EXTRA_ARGS+=("--set" "secretChecksum=${SECRET_CHECKSUM}")
+          fi
 
           # Apply environment-specific overrides for staging vs production
           if [ "$TARGET_ENV" = "staging" ]; then

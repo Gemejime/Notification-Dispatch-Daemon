@@ -12,6 +12,8 @@ image:
 imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
+podAnnotations: {}
+secretChecksum: ""
 
 # Pod termination grace period (ADR-005 requires 75s for 30-60s staggered draining)
 terminationGracePeriodSeconds: 75
@@ -140,7 +142,6 @@ env:
   LOG_LEVEL: "INFO"
   NODE_ID: "node-prod-01"
   PORT: "8080"
-  POSTGRES_DSN: "postgres://rag_daemon_app:CHANGE_ME_PRODUCTION_POSTGRES_PASSWORD@pgbouncer.postgres.svc.cluster.local:6432/rag_notifications?sslmode=verify-full"
   REDIS_ADDRS: "redis-cluster-node-0.redis.svc.cluster.local:6379,redis-cluster-node-1.redis.svc.cluster.local:6379,redis-cluster-node-2.redis.svc.cluster.local:6379"
   SSE_HEARTBEAT_INTERVAL: "15s"
   SSE_RING_BUFFER_SIZE: "256"

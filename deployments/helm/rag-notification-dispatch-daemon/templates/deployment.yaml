@@ -20,6 +20,12 @@ spec:
     metadata:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if .Values.secretChecksum }}
+        checksum/secret: {{ .Values.secretChecksum | quote }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       labels:
         {{- include "rag-notification-dispatch-daemon.labels" . | nindent 8 }}
     spec:

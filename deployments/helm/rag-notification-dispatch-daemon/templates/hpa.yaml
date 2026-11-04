@@ -20,6 +20,7 @@ spec:
           type: Utilization
           averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
     {{- if and .Values.autoscaling.customMetrics .Values.autoscaling.customMetrics.enabled }}
+    # Prerequisite: The Prometheus Adapter rule must aggregate notification_active_sse_connections by pod across tenant_id and node_id, producing one value per pod for the HPA.
     - type: Pods
       pods:
         metric:

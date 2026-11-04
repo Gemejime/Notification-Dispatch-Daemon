@@ -1,6 +1,6 @@
 # Multi-stage distroless build for rag-notification-dispatch-daemon
-# Stage 1: Build binary using official Go 1.23 toolchain
-FROM golang:1.23-bookworm AS builder
+# Stage 1: Build binary using official Go 1.26 toolchain
+FROM golang:1.26-bookworm AS builder
 
 ARG TARGETARCH
 

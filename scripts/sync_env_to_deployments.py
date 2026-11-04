@@ -25,7 +25,7 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 # Sensitive key substrings that must NEVER be committed to values.yaml
-SENSITIVE_SUBSTRINGS = ("PASSWORD", "SECRET", "TOKEN", "KEY")
+SENSITIVE_SUBSTRINGS = ("PASSWORD", "SECRET", "TOKEN", "KEY", "POSTGRES_DSN", "DSN")
 
 DEFAULT_ENV_FILE = Path(".env.prod")
 DEFAULT_VALUES_FILES = [
@@ -52,6 +52,8 @@ def parse_env_file(filepath: Path) -> Dict[str, str]:
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue
+            if stripped.startswith("export "):
+                stripped = stripped[len("export "):].strip()
             if "=" not in stripped:
                 continue
 
@@ -112,8 +114,8 @@ def format_env_block(env_data: Dict[str, str], secret_name: str) -> str:
     lines.append(f'  secretName: "{secret_name}"')
     for key in sorted(env_data.keys()):
         val = str(env_data[key])
-        # Escape quotes inside value if needed
-        escaped_val = val.replace('"', '\\"')
+        # Escape backslashes first, then quotes
+        escaped_val = val.replace("\\", "\\\\").replace('"', '\\"')
         lines.append(f'  {key}: "{escaped_val}"')
     return "\n".join(lines)
 
