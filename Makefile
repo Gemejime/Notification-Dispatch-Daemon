@@ -1,19 +1,12 @@
-.PHONY: all build fmt vet test bench docker-build helm-lint test-performance soak-test clean openapi-check sync-env check-env-drift
+.PHONY: all build fmt vet test bench docker-build helm-lint test-performance soak-test clean openapi-check
 
 GO ?= go
 GOMEMLIMIT ?= 1800MiB
 GOGC ?= 80
 BINARY_NAME ?= notification-daemon
 IMAGE_TAG ?= rag-notification-dispatch-daemon:latest
-PYTHON ?= python
 
 all: fmt vet test build
-
-sync-env:
-	$(PYTHON) scripts/sync_env_to_deployments.py --sync
-
-check-env-drift:
-	$(PYTHON) scripts/sync_env_to_deployments.py --check-only
 
 build:
 	GOMEMLIMIT=$(GOMEMLIMIT) GOGC=$(GOGC) $(GO) build -trimpath -o bin/$(BINARY_NAME) ./cmd/notification-daemon
