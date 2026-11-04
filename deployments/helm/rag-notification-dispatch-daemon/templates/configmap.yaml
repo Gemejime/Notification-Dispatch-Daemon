@@ -5,11 +5,10 @@ metadata:
   labels:
     {{- include "rag-notification-dispatch-daemon.labels" . | nindent 4 }}
 data:
-  PORT: {{ default .Values.service.targetPort (get .Values.env "PORT") | quote }}
-  HTTP_PORT: {{ .Values.service.targetPort | quote }}
+  PORT: {{ default "8080" (get .Values.env "PORT") | quote }}
   GRPC_PORT: {{ default "50051" (get .Values.env "GRPC_PORT") | quote }}
   {{- range $key, $val := .Values.env }}
-  {{- if and (ne $key "secretName") (ne $key "PORT") (ne $key "HTTP_PORT") (ne $key "GRPC_PORT") (ne $key "POSTGRES_DSN") (ne $val nil) }}
+  {{- if and (ne $key "secretName") (ne $key "PORT") (ne $key "GRPC_PORT") (ne $val nil) }}
   {{ $key }}: {{ $val | quote }}
   {{- end }}
   {{- end }}
