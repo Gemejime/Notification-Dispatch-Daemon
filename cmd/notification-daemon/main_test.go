@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -20,6 +21,12 @@ import (
 )
 
 func TestOperationalProbesAndConfig(t *testing.T) {
+	tmpEnv := t.TempDir() + "/empty.env"
+	if err := os.WriteFile(tmpEnv, []byte(""), 0600); err != nil {
+		t.Fatalf("failed to create temp empty env file: %v", err)
+	}
+	t.Setenv("ENV_FILE", tmpEnv)
+	t.Setenv("ENVIRONMENT", "")
 	t.Setenv("SSE_RING_BUFFER_SIZE", "")
 	ConfigureRuntimeMemoryBounds()
 	cfg, err := LoadConfig()

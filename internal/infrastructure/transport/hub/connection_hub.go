@@ -346,14 +346,13 @@ func (h *ConnectionHub) DrainWithJitter(ctx context.Context, minJitter, maxJitte
 			jitterDelay = minJitter
 		}
 
-		sess.RingBuffer.TriggerDrain(jitterDelay)
-
 		go func(s *ActiveSession, delay time.Duration) {
 			defer wg.Done()
 			select {
 			case <-time.After(delay):
 			case <-ctx.Done():
 			}
+			s.RingBuffer.TriggerDrain(delay)
 			h.Deregister(s.Conn.ConnectionID)
 		}(sess, jitterDelay)
 	}

@@ -525,6 +525,64 @@ func TestLastEventIDReplayBufferAndRateLimiting(t *testing.T) {
 	if len(resCold.Events) != 1 || resCold.Events[0].EventID != "cold_01" {
 		t.Fatalf("expected cold_01 recovered from journal, got %v", resCold.Events)
 	}
+
+	// 5. Test merged ordering: earlier journal events must precede Redis events
+	tenantMerged := "tnt_merged"
+	now := time.Now()
+
+	// Base event present in both
+	baseEv := entity.NotificationEvent{
+		EventID:       "ev_base_01",
+		TenantID:      tenantMerged,
+		EventType:     entity.EventTypeIngestionMilestone,
+		OccurredAt:    now,
+		PayloadJSON:   []byte(`{"status":"base"}`),
+		SourceService: "catalog",
+	}
+	_ = reg.AppendReplayEvent(ctx, tenantMerged, baseEv)
+	_ = journalRepo.AppendEvent(ctx, baseEv)
+
+	// Redis has a later event (t0 + 2m)
+	laterRedisEv := entity.NotificationEvent{
+		EventID:       "ev_later_03",
+		TenantID:      tenantMerged,
+		EventType:     entity.EventTypeIngestionMilestone,
+		OccurredAt:    now.Add(2 * time.Minute),
+		PayloadJSON:   []byte(`{"status":"later"}`),
+		SourceService: "catalog",
+	}
+	_ = reg.AppendReplayEvent(ctx, tenantMerged, laterRedisEv)
+
+	// Journal has an intermediate event (t0 + 1m)
+	earlierJournalEv := entity.NotificationEvent{
+		EventID:       "ev_earlier_02",
+		TenantID:      tenantMerged,
+		EventType:     entity.EventTypeIngestionMilestone,
+		OccurredAt:    now.Add(1 * time.Minute),
+		PayloadJSON:   []byte(`{"status":"earlier_2"}`),
+		SourceService: "catalog",
+	}
+	_ = journalRepo.AppendEvent(ctx, earlierJournalEv)
+
+	mergedHandler := query.NewFetchReplayEventsHandler(reg, journalRepo, 50, 100, logger, metrics)
+	resMerged, errMerged := mergedHandler.Handle(ctx, query.FetchReplayEventsQuery{
+		TenantID:    tenantMerged,
+		LastEventID: "ev_base_01",
+		Limit:       10,
+	})
+	if errMerged != nil {
+		t.Fatalf("merged replay fetch failed: %v", errMerged)
+	}
+	if len(resMerged.Events) != 2 {
+		t.Fatalf("expected 2 merged events, got %d", len(resMerged.Events))
+	}
+	if resMerged.Events[0].EventID != "ev_earlier_02" || resMerged.Events[1].EventID != "ev_later_03" {
+		t.Fatalf("expected chronological order [ev_earlier_02, ev_later_03], got [%s, %s]",
+			resMerged.Events[0].EventID, resMerged.Events[1].EventID)
+	}
+	if resMerged.HighestWatermarkEventID != "ev_later_03" {
+		t.Fatalf("expected watermark ev_later_03, got %s", resMerged.HighestWatermarkEventID)
+	}
 }
 
 type mockSubCacheReader struct {

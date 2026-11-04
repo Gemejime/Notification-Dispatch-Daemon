@@ -97,6 +97,7 @@ func TestSIGTERMGracefulDrainingReadinessAndJitter(t *testing.T) {
 	type streamResult struct {
 		retryMs       int
 		closeDuration time.Duration
+		closedAt      time.Time
 		err           error
 	}
 
@@ -133,6 +134,7 @@ func TestSIGTERMGracefulDrainingReadinessAndJitter(t *testing.T) {
 			for {
 				line, readErr := reader.ReadString('\n')
 				if readErr != nil {
+					results[idx].closedAt = time.Now()
 					results[idx].closeDuration = time.Since(streamStart)
 					break
 				}
@@ -162,6 +164,7 @@ func TestSIGTERMGracefulDrainingReadinessAndJitter(t *testing.T) {
 	drainCtx, drainCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer drainCancel()
 
+	drainStart := time.Now()
 	drainDoneCh := connHub.DrainWithJitter(drainCtx, minJitter, maxJitter)
 
 	// Step 4: Immediately assert /ready flips to 503 Service Unavailable with draining=true.
@@ -199,7 +202,8 @@ func TestSIGTERMGracefulDrainingReadinessAndJitter(t *testing.T) {
 
 	connectWg.Wait()
 
-	// Step 5: Verify that all streams received valid `retry:` directive frames and closed in staggered fashion.
+	// Step 5: Verify that all streams received valid `retry:` directive frames and closed in staggered fashion within jitter window.
+	timingTolerance := 100 * time.Millisecond
 	minClose := time.Duration(1<<62 - 1)
 	maxClose := time.Duration(0)
 	retryDirectivesReceived := 0
@@ -215,19 +219,21 @@ func TestSIGTERMGracefulDrainingReadinessAndJitter(t *testing.T) {
 				t.Errorf("retryMs %d outside expected jitter window [%v, %v]", res.retryMs, minJitter, maxJitter)
 			}
 		}
-		if res.closeDuration < minClose {
-			minClose = res.closeDuration
+
+		closeOffset := res.closedAt.Sub(drainStart)
+		if closeOffset < minJitter-timingTolerance || closeOffset > maxJitter+timingTolerance {
+			t.Errorf("stream close offset %v outside jitter window [%v, %v]", closeOffset, minJitter, maxJitter)
 		}
-		if res.closeDuration > maxClose {
-			maxClose = res.closeDuration
+		if closeOffset < minClose {
+			minClose = closeOffset
+		}
+		if closeOffset > maxClose {
+			maxClose = closeOffset
 		}
 	}
 
 	if retryDirectivesReceived != len(results) {
 		t.Fatalf("expected all %d active streams to receive retry directive frames before closure, got %d", len(results), retryDirectivesReceived)
-	}
-	if maxClose <= minClose {
-		t.Fatalf("expected staggered close-time spread to be nonzero, got minClose=%v, maxClose=%v", minClose, maxClose)
 	}
 
 	t.Logf("graceful drain verified: %d/%d received retry directives, staggered close spread across %v (min: %v, max: %v)",

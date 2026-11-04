@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -234,12 +235,20 @@ func (h *FetchReplayEventsHandler) Handle(
 				if q.UserID == "" || ev.UserID == "" || ev.UserID == q.UserID {
 					seen[ev.EventID] = struct{}{}
 					events = append(events, ev)
-					if len(events) >= q.Limit {
-						break
-					}
 				}
 			}
 		}
+	}
+
+	// Order merged events by occurred_at ascending, then event_id ascending, then apply limit
+	sort.SliceStable(events, func(i, j int) bool {
+		if !events[i].OccurredAt.Equal(events[j].OccurredAt) {
+			return events[i].OccurredAt.Before(events[j].OccurredAt)
+		}
+		return events[i].EventID < events[j].EventID
+	})
+	if len(events) > q.Limit {
+		events = events[:q.Limit]
 	}
 
 	// If events have been collected and the journal query failed, signal retry to the client
