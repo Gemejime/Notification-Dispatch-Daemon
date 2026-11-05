@@ -270,6 +270,7 @@ func (h *StreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				slog.Duration("drain_delay", drainDelay),
 			)
 			_ = flusher.WriteRetryDirective(drainDelay)
+			rb.CompleteDrain()
 			return
 
 		case <-rb.Notify():

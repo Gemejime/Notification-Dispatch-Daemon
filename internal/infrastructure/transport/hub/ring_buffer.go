@@ -61,6 +61,8 @@ type RingBuffer struct {
 	slowConsumerTimeout time.Duration
 	notifyCh            chan struct{}
 	drainCh             chan time.Duration
+	drainDoneCh         chan struct{}
+	drainDoneOnce       sync.Once
 	closed              bool
 	evicted             bool
 	evictionReason      string
@@ -88,6 +90,7 @@ func NewRingBuffer(
 		slowConsumerTimeout: slowConsumerTimeout,
 		notifyCh:            make(chan struct{}, 1),
 		drainCh:             make(chan time.Duration, 1),
+		drainDoneCh:         make(chan struct{}),
 		tenantID:            tenantID,
 		connectionID:        connectionID,
 		metrics:             metrics,
@@ -261,6 +264,18 @@ func (rb *RingBuffer) DrainDelay() <-chan time.Duration {
 	return rb.drainCh
 }
 
+// CompleteDrain signals that the SSE stream handler has finished writing the retry directive.
+func (rb *RingBuffer) CompleteDrain() {
+	rb.drainDoneOnce.Do(func() {
+		close(rb.drainDoneCh)
+	})
+}
+
+// DrainDone returns a channel signaled when the SSE stream handler has completed writing the retry directive.
+func (rb *RingBuffer) DrainDone() <-chan struct{} {
+	return rb.drainDoneCh
+}
+
 // Count returns the current number of buffered frames.
 func (rb *RingBuffer) Count() int {
 	rb.mu.Lock()
@@ -294,5 +309,8 @@ func (rb *RingBuffer) Close() {
 		return
 	}
 	rb.closed = true
+	rb.drainDoneOnce.Do(func() {
+		close(rb.drainDoneCh)
+	})
 	rb.signalNotifyLocked()
 }

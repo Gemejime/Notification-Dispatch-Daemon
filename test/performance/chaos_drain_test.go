@@ -204,6 +204,7 @@ func TestSIGTERMGracefulDrainingReadinessAndJitter(t *testing.T) {
 
 	// Step 5: Verify that all streams received valid `retry:` directive frames and closed in staggered fashion within jitter window.
 	timingTolerance := 100 * time.Millisecond
+	lowerTimingTolerance := 20 * time.Millisecond
 	minClose := time.Duration(1<<62 - 1)
 	maxClose := time.Duration(0)
 	retryDirectivesReceived := 0
@@ -221,7 +222,7 @@ func TestSIGTERMGracefulDrainingReadinessAndJitter(t *testing.T) {
 		}
 
 		closeOffset := res.closedAt.Sub(drainStart)
-		if closeOffset < minJitter-timingTolerance || closeOffset > maxJitter+timingTolerance {
+		if closeOffset < minJitter-lowerTimingTolerance || closeOffset > maxJitter+timingTolerance {
 			t.Errorf("stream close offset %v outside jitter window [%v, %v]", closeOffset, minJitter, maxJitter)
 		}
 		if closeOffset < minClose {
@@ -234,6 +235,16 @@ func TestSIGTERMGracefulDrainingReadinessAndJitter(t *testing.T) {
 
 	if retryDirectivesReceived != len(results) {
 		t.Fatalf("expected all %d active streams to receive retry directive frames before closure, got %d", len(results), retryDirectivesReceived)
+	}
+
+	distinctRetries := make(map[int]struct{})
+	for _, res := range results {
+		if res.retryMs > 0 {
+			distinctRetries[res.retryMs] = struct{}{}
+		}
+	}
+	if len(distinctRetries) < 2 {
+		t.Fatalf("expected at least 2 distinct retry delays, got %d (%v)", len(distinctRetries), distinctRetries)
 	}
 
 	t.Logf("graceful drain verified: %d/%d received retry directives, staggered close spread across %v (min: %v, max: %v)",

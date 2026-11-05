@@ -544,7 +544,7 @@ func TestLastEventIDReplayBufferAndRateLimiting(t *testing.T) {
 
 	// Redis has a later event (t0 + 2m)
 	laterRedisEv := entity.NotificationEvent{
-		EventID:       "ev_later_03",
+		EventID:       "ev_a_later_03",
 		TenantID:      tenantMerged,
 		EventType:     entity.EventTypeIngestionMilestone,
 		OccurredAt:    now.Add(2 * time.Minute),
@@ -576,12 +576,12 @@ func TestLastEventIDReplayBufferAndRateLimiting(t *testing.T) {
 	if len(resMerged.Events) != 2 {
 		t.Fatalf("expected 2 merged events, got %d", len(resMerged.Events))
 	}
-	if resMerged.Events[0].EventID != "ev_earlier_02" || resMerged.Events[1].EventID != "ev_later_03" {
-		t.Fatalf("expected chronological order [ev_earlier_02, ev_later_03], got [%s, %s]",
+	if resMerged.Events[0].EventID != "ev_earlier_02" || resMerged.Events[1].EventID != "ev_a_later_03" {
+		t.Fatalf("expected chronological order [ev_earlier_02, ev_a_later_03], got [%s, %s]",
 			resMerged.Events[0].EventID, resMerged.Events[1].EventID)
 	}
-	if resMerged.HighestWatermarkEventID != "ev_later_03" {
-		t.Fatalf("expected watermark ev_later_03, got %s", resMerged.HighestWatermarkEventID)
+	if resMerged.HighestWatermarkEventID != "ev_a_later_03" {
+		t.Fatalf("expected watermark ev_a_later_03, got %s", resMerged.HighestWatermarkEventID)
 	}
 }
 
