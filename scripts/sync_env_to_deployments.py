@@ -27,6 +27,9 @@ if hasattr(sys.stderr, "reconfigure"):
 # Sensitive key substrings that must NEVER be committed to values.yaml
 SENSITIVE_SUBSTRINGS = ("PASSWORD", "SECRET", "TOKEN", "KEY", "POSTGRES_DSN", "DSN")
 
+# Pattern matching URL userinfo with embedded password (scheme://user:password@)
+URL_PASSWORD_USERINFO_REGEX = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^/\s:@]+:[^/\s:@]+@")
+
 DEFAULT_ENV_FILE = Path(".env.prod")
 DEFAULT_VALUES_FILES = [
     Path("deployments/helm/values.yaml"),
@@ -39,6 +42,11 @@ def is_sensitive_key(key: str) -> bool:
     """Return True if key contains any sensitive credentials keyword."""
     upper = key.upper()
     return any(sub in upper for sub in SENSITIVE_SUBSTRINGS)
+
+
+def has_password_userinfo(val: str) -> bool:
+    """Return True if val contains URL userinfo with a password, in the form scheme://user:password@."""
+    return bool(URL_PASSWORD_USERINFO_REGEX.search(str(val)))
 
 
 def parse_env_file(filepath: Path) -> Dict[str, str]:
@@ -161,8 +169,14 @@ def update_values_content(original_content: str, env_data: Dict[str, str]) -> st
 def sync_environments(env_file: Path, values_files: List[Path]) -> None:
     """Update values.yaml files from .env.prod, excluding sensitive keys."""
     raw_env = parse_env_file(env_file)
-    non_sensitive_env = {k: v for k, v in raw_env.items() if not is_sensitive_key(k)}
-    sensitive_keys = [k for k in raw_env.keys() if is_sensitive_key(k)]
+    non_sensitive_env = {
+        k: v for k, v in raw_env.items()
+        if not is_sensitive_key(k) and not has_password_userinfo(v)
+    }
+    sensitive_keys = [
+        k for k in raw_env.keys()
+        if is_sensitive_key(k) or has_password_userinfo(raw_env[k])
+    ]
 
     print(f"[INFO] Parsed {len(raw_env)} variables from {env_file}")
     print(f"[INFO] Excluded {len(sensitive_keys)} sensitive variables: {', '.join(sorted(sensitive_keys))}")
@@ -195,7 +209,10 @@ def check_drift(env_file: Path, values_files: List[Path]) -> bool:
     Returns True if clean (no drift), False if drift detected.
     """
     raw_env = parse_env_file(env_file)
-    expected_env = {k: v for k, v in raw_env.items() if not is_sensitive_key(k)}
+    expected_env = {
+        k: v for k, v in raw_env.items()
+        if not is_sensitive_key(k) and not has_password_userinfo(v)
+    }
 
     has_drift = False
 

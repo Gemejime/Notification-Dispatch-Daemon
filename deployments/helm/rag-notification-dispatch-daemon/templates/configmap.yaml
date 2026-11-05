@@ -9,7 +9,7 @@ data:
   HTTP_PORT: {{ .Values.service.targetPort | quote }}
   GRPC_PORT: {{ default "50051" (get .Values.env "GRPC_PORT") | quote }}
   {{- range $key, $val := .Values.env }}
-  {{- if and (ne $key "secretName") (ne $key "PORT") (ne $key "HTTP_PORT") (ne $key "GRPC_PORT") (ne $key "POSTGRES_DSN") (ne $val nil) }}
+  {{- if and (ne $key "secretName") (ne $key "PORT") (ne $key "HTTP_PORT") (ne $key "GRPC_PORT") (ne $key "POSTGRES_DSN") (ne $key "REDIS_PASSWORD") (ne $key "POSTGRES_PASSWORD") (ne $key "CHANNEL_AUTH_SECRET") (ne $key "JWT_PUBLIC_KEY_PEM") (ne $val nil) }}
   {{ $key }}: {{ $val | quote }}
   {{- end }}
   {{- end }}

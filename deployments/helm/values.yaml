@@ -123,8 +123,8 @@ podAntiAffinity:
 
 tolerations: []
 
-# 12-Factor runtime environment configuration
 # 12-Factor runtime environment configuration (synced from .env.prod)
+# Note: NODE_ID is derived dynamically from metadata.name in the Deployment and omitted from static env.
 env:
   secretName: "rag-notification-dispatch-daemon-secrets"
   DOTENV_OVERRIDE: "false"
@@ -140,7 +140,6 @@ env:
   KAFKA_CDC_TOPICS: "rag.cdc.kb-catalog,rag.cdc.ingestion,rag.cdc.chunk-lifecycle"
   KAFKA_CONSUMER_GROUP: "rag-notification-dispatch-daemon"
   LOG_LEVEL: "INFO"
-  NODE_ID: "node-prod-01"
   PORT: "8080"
   REDIS_ADDRS: "redis-cluster-node-0.redis.svc.cluster.local:6379,redis-cluster-node-1.redis.svc.cluster.local:6379,redis-cluster-node-2.redis.svc.cluster.local:6379"
   SSE_HEARTBEAT_INTERVAL: "15s"

@@ -172,6 +172,18 @@ spec:
         property: public_key
 ```
 
+### 3. ESO Credential Sync and Restart Invariant
+
+Because Kubernetes injects credentials into container environment variables at pod startup time, external secret updates synchronized by ESO do not modify active process environments in flight. After ESO refreshes a target Kubernetes `Secret`:
+1. Operators or automated controllers MUST restart the deployment:
+   ```bash
+   kubectl rollout restart deployment/rag-notification-dispatch-daemon -n rag-system
+   ```
+2. Operators MUST wait for the rollout to complete successfully before decommissioning or revoking the previous credential:
+   ```bash
+   kubectl rollout status deployment/rag-notification-dispatch-daemon -n rag-system --timeout=120s
+   ```
+
 ---
 
 ## 6. Zero-Downtime Secret Rotation Runbook
@@ -179,21 +191,22 @@ spec:
 ### A. Redis Cluster Password Rotation
 1. Update Redis cluster to accept both old and new credentials (dual-auth mode).
 2. Update `REDIS_PASSWORD` in GitHub Actions Secrets or Vault.
-3. Trigger the CD pipeline (`gh workflow run deploy.yml -f environment=production`).
-4. Daemon pods perform staggered graceful draining (ADR-005: 30–60s randomized jitter window) and reconnect with the new credentials.
-5. Decommission the old password in Redis Cluster.
+3. Trigger the CD pipeline (`gh workflow run deploy.yml -f environment=production`) or restart the deployment (`kubectl rollout restart deployment/rag-notification-dispatch-daemon -n rag-system`).
+4. Wait for deployment rollout to complete (`kubectl rollout status deployment/rag-notification-dispatch-daemon -n rag-system --timeout=120s`). Daemon pods perform staggered graceful draining (ADR-005: 30–60s randomized jitter window) and reconnect with the new credentials.
+5. Decommission the old password in Redis Cluster only after rollout completion.
 
 ### B. PostgreSQL PgBouncer Password Rotation
 1. Create new user password in PostgreSQL / PgBouncer auth file.
 2. Update `POSTGRES_PASSWORD` in GitHub Secrets / Vault.
-3. Trigger CD pipeline rollout.
-4. Revoke the old password in PostgreSQL after all daemon pods have restarted.
+3. Trigger CD pipeline rollout or restart deployment (`kubectl rollout restart deployment/rag-notification-dispatch-daemon -n rag-system`).
+4. Wait for the rollout to complete (`kubectl rollout status deployment/rag-notification-dispatch-daemon -n rag-system --timeout=120s`).
+5. Revoke the old password in PostgreSQL after all daemon pods have completed rollout.
 
 ### C. JWT / Channel Authentication Secret Rotation
 1. Auth service issues JWTs signed with Key Pair B while continuing to accept Key Pair A.
 2. Update `JWT_PUBLIC_KEY_PEM` / `CHANNEL_AUTH_SECRET` in secret store.
-3. Deploy updated secret. Daemon validates against new key pair immediately upon pod restart.
-4. Decommission Key Pair A after all short-lived client tokens expire.
+3. Deploy updated secret or wait for ESO synchronization, restart deployment (`kubectl rollout restart deployment/rag-notification-dispatch-daemon -n rag-system`), and wait for rollout completion (`kubectl rollout status deployment/rag-notification-dispatch-daemon -n rag-system --timeout=120s`).
+4. Decommission Key Pair A after all short-lived client tokens expire and rollout is complete.
 
 ---
 

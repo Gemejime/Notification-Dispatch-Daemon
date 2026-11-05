@@ -519,7 +519,7 @@ The daemon automatically reads `.env` on startup via its zero-dependency dotenv 
 | `ENVIRONMENT` | `development` | Yes | Operational deployment environment. Approved options: `production`, `staging`, `development` (strictly no `local`). Validated at startup. |
 | `GOMEMLIMIT` | `1800MiB` | Yes | Go runtime soft memory limit inside `2GiB` pod ceiling (supports `1800MiB`, `2GiB`, `1000MB`, or raw bytes) |
 | `GOGC` | `80` | Yes | Go garbage collector target percentage to prevent OOM spikes (`80`, `100`, or `off`) |
-| `NODE_ID` | Pod hostname | Yes | Unique daemon instance identifier for `pod.{node_id}.events` targeted routing |
+| `NODE_ID` | Pod hostname | Yes | Unique daemon instance identifier for `pod.{node_id}.events` targeted routing (derived dynamically from pod `metadata.name` in Kubernetes Deployment) |
 | `HTTP_PORT` | `8080` | Yes | HTTP/2 SSE & REST listening port |
 | `PORT` | `8080` | No | Alternate listening port fallback (compatible with Cloud Run / PaaS container platforms) |
 | `POSTGRES_DSN` | — | Yes (Secret) | PgBouncer PostgreSQL 16+ connection string (strictly cold-path only; redacted in logs) |

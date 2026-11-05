@@ -186,6 +186,8 @@ jobs:
       - name: Deploy Helm Chart with Injected Secret Bindings
         env:
           SECRET_CHECKSUM: ${{ steps.provision_secrets.outputs.secret_checksum }}
+          GHCR_PAT: ${{ secrets.GHCR_PAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           NAMESPACE="rag-system"
           RELEASE_NAME="rag-notification-dispatch-daemon"
@@ -198,6 +200,22 @@ jobs:
             "--set" "image.repository=${IMAGE_REPO}"
             "--set" "image.tag=${IMAGE_TAG}"
           )
+
+          PULL_SECRET_NAME="ghcr-pull-secret"
+          AUTH_TOKEN="${GHCR_PAT:-$GITHUB_TOKEN}"
+          if [ -n "$AUTH_TOKEN" ]; then
+            if [ -f "$HOME/.kube/config" ]; then
+              echo "[PULL-SECRET] Creating or updating GHCR image pull secret..."
+              kubectl create namespace "${NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
+              kubectl create secret docker-registry "${PULL_SECRET_NAME}" \
+                --namespace="${NAMESPACE}" \
+                --docker-server=ghcr.io \
+                --docker-username="${{ github.actor }}" \
+                --docker-password="${AUTH_TOKEN}" \
+                --dry-run=client -o yaml | kubectl apply -f -
+            fi
+            HELM_EXTRA_ARGS+=("--set" "imagePullSecrets[0].name=${PULL_SECRET_NAME}")
+          fi
 
           if [ -n "$SECRET_CHECKSUM" ]; then
             HELM_EXTRA_ARGS+=("--set" "secretChecksum=${SECRET_CHECKSUM}")
