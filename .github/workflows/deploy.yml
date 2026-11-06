@@ -202,7 +202,7 @@ jobs:
           )
 
           PULL_SECRET_NAME="ghcr-pull-secret"
-          AUTH_TOKEN="${GHCR_PAT:-$GITHUB_TOKEN}"
+          AUTH_TOKEN="${GHCR_PAT:-}"
           if [ -n "$AUTH_TOKEN" ]; then
             if [ -f "$HOME/.kube/config" ]; then
               echo "[PULL-SECRET] Creating or updating GHCR image pull secret..."

@@ -37,7 +37,7 @@ spec:
         existingSecret: "rag-notification-dispatch-daemon-secrets"
         existingSecretPasswordKey: "REDIS_PASSWORD"
         redis:
-          configuration: |
+          defaultConfigOverride: |
             appendonly yes
             appendfsync everysec
             tcp-keepalive 60

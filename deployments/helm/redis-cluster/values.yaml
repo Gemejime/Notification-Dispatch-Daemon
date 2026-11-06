@@ -32,7 +32,7 @@ existingSecretPasswordKey: "REDIS_PASSWORD"
 
 # Engine configuration tuning for real-time notification dispatch
 redis:
-  configuration: |
+  defaultConfigOverride: |
     # Persistence: AOF everysec for low-overhead durability
     appendonly yes
     appendfsync everysec
