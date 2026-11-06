@@ -26,6 +26,12 @@
 
 ## Completed Units
 
+- **Production README & Authoritative Service Documentation**:
+  - **Comprehensive Service Guide (`README.md`)**:
+    - Authored production-grade microservice documentation encompassing high-density SSE architecture, decoupled CDC outbox ingestion, architectural decision records (ADR-001 through ADR-005), SLIs/SLOs, OpenAPI 3.1 endpoints, hexagonal package structure, local development quickstart with Docker Compose, Bitnami Redis 7.2 Cluster deployment, Kubernetes Helm/ArgoCD rollout, and Secured Logging invariants.
+  - **Authoritative Architecture Specification (`ARCHITECTURE.md`)**:
+    - Authored comprehensive 5-Layer backend architecture guide detailing API transport, data persistence, application CQRS flows, SSRF/egress isolation, runtime bounds (`GOMEMLIMIT=1800MiB`, `GOGC=80`), non-blocking ring buffer drop/eviction policies, sequence diagrams for CDC-to-SSE and reconnect replay, and full ADR records.
+
 - **CI/CD Secret Injection & Secret Management Architecture**:
   - **Secret Management Architecture (`deployments/SECRET_MANAGEMENT.md`)**:
     - Comprehensive guide detailing 3 core security invariants, 7-item classification matrix (`REDIS_PASSWORD`, `POSTGRES_PASSWORD`, `POSTGRES_DSN`, `CHANNEL_AUTH_SECRET`, `JWT_PUBLIC_KEY_PEM`, `KUBECONFIG`, `GHCR_PAT`), ASCII secret injection flow, External Secrets Operator (Vault) specification, and zero-downtime rotation / emergency revocation runbooks.
