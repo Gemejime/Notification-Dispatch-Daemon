@@ -1,0 +1,91 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rag-notification-dispatch-daemon-redis
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: rag-notification-dispatch-daemon-redis
+    app.kubernetes.io/part-of: rag-notification-system
+    app.kubernetes.io/managed-by: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+  source:
+    repoURL: https://charts.bitnami.com/bitnami
+    chart: redis-cluster
+    targetRevision: 11.2.0
+    helm:
+      releaseName: rag-notification-dispatch-daemon-redis
+      valuesObject:
+        global:
+          redis:
+            existingSecret: "rag-notification-dispatch-daemon-secrets"
+            existingSecretPasswordKey: "REDIS_PASSWORD"
+        fullnameOverride: "rag-notification-dispatch-daemon-redis"
+        image:
+          registry: docker.io
+          repository: bitnami/redis-cluster
+          tag: "7.2-debian-12"
+          pullPolicy: IfNotPresent
+        cluster:
+          init: true
+          nodes: 6
+          replicas: 1
+        usePassword: true
+        usePasswordFile: false
+        existingSecret: "rag-notification-dispatch-daemon-secrets"
+        existingSecretPasswordKey: "REDIS_PASSWORD"
+        redis:
+          configuration: |
+            appendonly yes
+            appendfsync everysec
+            tcp-keepalive 60
+            timeout 0
+            maxmemory-policy noeviction
+            cluster-node-timeout 5000
+            cluster-migration-barrier 1
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 1Gi
+        persistence:
+          enabled: true
+          size: 5Gi
+          accessModes:
+            - ReadWriteOnce
+        podAntiAffinityPreset: soft
+        metrics:
+          enabled: true
+          service:
+            port: 9121
+          podAnnotations:
+            prometheus.io/scrape: "true"
+            prometheus.io/port: "9121"
+            prometheus.io/path: "/metrics"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: rag-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

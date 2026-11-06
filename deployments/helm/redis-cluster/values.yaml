@@ -1,0 +1,80 @@
+# ==============================================================================
+# Bitnami Redis Cluster (Redis 7.2+) Helm Values
+# Microservice: rag-notification-dispatch-daemon
+# Architectural Reference: ADR-003 (Targeted Routing), ADR-004 (Subscription Cache)
+# Topology: 6 Nodes (3 Primary Shards + 3 Secondary Replicas) with cluster.init
+# ==============================================================================
+
+global:
+  redis:
+    existingSecret: "rag-notification-dispatch-daemon-secrets"
+    existingSecretPasswordKey: "REDIS_PASSWORD"
+
+fullnameOverride: "rag-notification-dispatch-daemon-redis"
+
+image:
+  registry: docker.io
+  repository: bitnami/redis-cluster
+  tag: "7.2-debian-12"
+  pullPolicy: IfNotPresent
+
+# Clustered Topology: 6 nodes (3 Primaries + 3 Secondaries)
+cluster:
+  init: true
+  nodes: 6
+  replicas: 1
+
+# Authentication linked to shared microservice secret
+usePassword: true
+usePasswordFile: false
+existingSecret: "rag-notification-dispatch-daemon-secrets"
+existingSecretPasswordKey: "REDIS_PASSWORD"
+
+# Engine configuration tuning for real-time notification dispatch
+redis:
+  configuration: |
+    # Persistence: AOF everysec for low-overhead durability
+    appendonly yes
+    appendfsync everysec
+    tcp-keepalive 60
+    timeout 0
+    # Strict retention: do not evict notification replay or presence keys
+    maxmemory-policy noeviction
+    cluster-node-timeout 5000
+    cluster-migration-barrier 1
+
+# Container resource ceilings
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 1Gi
+
+# Storage persistence for AOF and RDB state
+persistence:
+  enabled: true
+  size: 5Gi
+  accessModes:
+    - ReadWriteOnce
+
+# High availability pod distribution
+podAntiAffinityPreset: soft
+
+# Prometheus metrics exporter configuration (port 9121)
+metrics:
+  enabled: true
+  service:
+    port: 9121
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9121"
+    prometheus.io/path: "/metrics"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
