@@ -1,15 +1,18 @@
 # RAG Notification Dispatch Daemon (`rag-notification-dispatch-daemon`)
 
 [![Go Version](https://img.shields.io/badge/go-1.23%2B-blue.svg)](https://golang.org)
-[![License](https://img.shields.io/badge/license-Apache%202.0-brightgreen.svg)](file:///c:/Users/ANIK/Desktop/Gemejime/Notification%20Dispatch%20Daemon/LICENSE)
-[![Architecture](https://img.shields.io/badge/architecture-hexagonal-orange.svg)](file:///c:/Users/ANIK/Desktop/Gemejime/Notification%20Dispatch%20Daemon/ARCHITECTURE.md)
-[![OpenAPI](https://img.shields.io/badge/OpenAPI-3.1-blueviolet.svg)](file:///c:/Users/ANIK/Desktop/Gemejime/Notification%20Dispatch%20Daemon/api/openapi/openapi.yaml)
-[![SLO Availability](https://img.shields.io/badge/SLO%20Availability-99.99%25-success.svg)](file:///c:/Users/ANIK/Desktop/Gemejime/Notification%20Dispatch%20Daemon/.ai/project-overview.md)
-[![Concurrent Sockets](https://img.shields.io/badge/capacity-%E2%89%A5100k%20sockets-purple.svg)](file:///c:/Users/ANIK/Desktop/Gemejime/Notification%20Dispatch%20Daemon/.ai/project-overview.md)
+[![License](https://img.shields.io/badge/license-Apache%202.0-brightgreen.svg)](LICENSE)
+[![Architecture](https://img.shields.io/badge/architecture-hexagonal-orange.svg)](ARCHITECTURE.md)
+[![OpenAPI](https://img.shields.io/badge/OpenAPI-3.1-blueviolet.svg)](api/openapi/openapi.yaml)
+[![SLO Availability](https://img.shields.io/badge/SLO%20Availability-99.99%25-success.svg)](.ai/project-overview.md)
+[![Concurrent Sockets](https://img.shields.io/badge/capacity-%E2%89%A5100k%20sockets-purple.svg)](.ai/project-overview.md)
 
 The **`rag-notification-dispatch-daemon`** is a high-density, ultra-low-latency Go 1.23+ microservice operating within the vertical feature control plane of the Multimodal RAG platform.
 
 It is engineered for **multiplexed Server-Sent Events (SSE) streaming** (`text/event-stream; charset=utf-8`) and **decoupled Change Data Capture (CDC) outbox ingestion**. By pairing targeted pod routing over Redis 7.2 Cluster with pod-local in-memory subscription rule caching, the daemon achieves sub-50ms notification delivery to browser clients and sub-15ms webhook task queue hand-offs—all with **zero synchronous database reads on the hot path**.
+
+> [!NOTE]
+> **Ingestion Stream Wiring**: In the current implementation, `cmd/notification-daemon/main.go` initializes an in-process channel stream (`kafka.NewChannelRecordStream`) without a Kafka producer. Records published directly to external Kafka brokers are not ingested until network Kafka stream drivers are wired in.
 
 ---
 
@@ -103,8 +106,8 @@ flowchart TD
 - **Dispatch Latency**: $P99 \le 50\text{ms}$ from CDC event ingestion to client socket write ($P99 \le 10\text{ms}$ socket write latency).
 - **Webhook Enqueue Latency**: $P99 \le 15\text{ms}$ to evaluate routing rules and push signed tasks to queues.
 - **Connection Capacity**: $\ge 100,000$ concurrent idle push connections across the daemon cluster ($\approx 20,000$ per pod; HPA threshold $\le 15,000$ sockets/pod).
-- **Runtime Memory Governor**: Go 1.23+ runtime configured with `GOMEMLIMIT=1800MiB` and `GOGC=80` inside `2GiB` container memory limits (`1GiB` request) to eliminate OOMKills under heavy GC allocation bursts.
-- **Ring Buffer Drop Policy**: 256-event non-blocking ring buffer per connection ([`ring_buffer.go`](file:///c:/Users/ANIK/Desktop/Gemejime/Notification%20Dispatch%20Daemon/internal/infrastructure/transport/hub/ring_buffer.go)). When saturated, intermediate non-terminal progress events (`is_terminal == false`) are dropped while terminal state transitions (`COMPLETED`, `FAILED`) are strictly preserved. Saturated slow consumers are evicted after $> 5\text{s}$.
+- **Runtime Memory Governor**: Go 1.23+ runtime configured with `GOMEMLIMIT=1800MiB` (soft target) and `GOGC=80` inside `2Gi` container memory limits (`1Gi` request). `GOMEMLIMIT` reduces, but does not completely eliminate, OOM risk under heavy GC allocation bursts; operators should provision and monitor container memory for peak workloads.
+- **Ring Buffer Drop Policy**: 256-event non-blocking ring buffer per connection ([`ring_buffer.go`](file:///c:/Users/ANIK/Desktop/Gemejime/Notification%20Dispatch%20Daemon/internal/infrastructure/transport/hub/ring_buffer.go)). When saturated, intermediate non-terminal progress events (`is_terminal == false`) are dropped while terminal state transitions (`COMPLETED`, `FAILED`) preempt older unread non-terminal events. If all 256 buffered frames are terminal, the connection is evicted (`PushEvictedAllTerminal`), and the client reconnects via `Last-Event-ID` replay (fetching up to 100 missed events) as a recovery mechanism rather than a ring-buffer guarantee. Saturated slow consumers exceeding the write deadline (default 5s, configurable via `SSE_SLOW_CONSUMER_TIMEOUT`) are cleanly evicted.
 - **Service Availability**: $99.99\%$ availability with zero dropped terminal events during rolling deployments.
 
 ---
@@ -196,11 +199,17 @@ Copy the development environment template:
 cp .env.example .env
 ```
 
-Ensure sensitive variables match your local setup:
+Ensure environment variables match your local setup:
 - `REDIS_CLUSTER_ADDRS=127.0.0.1:6379`
 - `REDIS_PASSWORD=devpassword123`
 - `KAFKA_BROKERS=127.0.0.1:9092`
 - `PORT=8080`
+
+> [!IMPORTANT]
+> **Authentication Requirement**: `JWT_PUBLIC_KEY_PEM` must contain a valid RSA/ECDSA public key in PEM format for the daemon to start (the daemon terminates with `os.Exit(1)` if missing or invalid). Multiline keys in `.env` must be enclosed in double quotes with literal `\n` characters:
+> ```bash
+> JWT_PUBLIC_KEY_PEM="-----BEGIN PUBLIC KEY-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...\n-----END PUBLIC KEY-----"
+> ```
 
 ### 3. Build & Run the Daemon
 
@@ -299,7 +308,7 @@ kubectl apply -f deployments/argo/application.yaml
 
 ## Security & Observability
 
-- **Secured Logging Invariant**: Structured JSON logging powered by Go's `log/slog`. All bearer tokens, HMAC secrets, database credentials, and raw notification payloads are automatically intercepted and serialized as `"[REDACTED]"`.
+- **Secured Logging Invariant**: Structured JSON logging powered by Go's `log/slog`. Recognized sensitive attribute keys (`authorization`, `token`, `password`, `dsn`, `payload`, `hmac_key`) and credential patterns are automatically redacted as `"[REDACTED]"`. Developers must strictly adhere to Secured Logging guidelines and never log raw notification payloads, bearer tokens, or database credentials.
 - **Tenant Push Isolation**: Handshake tokens bind each SSE client to a specific `tenant_id`. Cross-tenant channel subscription or message interception is impossible at the domain router level.
 - **Zero-Drift Configuration**: All production configuration parameters in `.env.prod` are validated against Helm charts via [`scripts/sync_env_to_deployments.py`](file:///c:/Users/ANIK/Desktop/Gemejime/Notification%20Dispatch%20Daemon/scripts/sync_env_to_deployments.py).
 - **Secret Management**: Follows External Secrets Operator (ESO) and HashiCorp Vault workflows detailed in [`deployments/SECRET_MANAGEMENT.md`](file:///c:/Users/ANIK/Desktop/Gemejime/Notification%20Dispatch%20Daemon/deployments/SECRET_MANAGEMENT.md).

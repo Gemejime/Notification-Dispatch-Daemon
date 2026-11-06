@@ -1,10 +1,10 @@
 # Architecture Specification - RAG Notification Dispatch Daemon (`rag-notification-dispatch-daemon`)
 
 [![Go Version](https://img.shields.io/badge/go-1.23%2B-blue.svg)](https://golang.org)
-[![Architecture Pattern](https://img.shields.io/badge/pattern-Hexagonal%20%2F%20Clean-orange.svg)](file:///c:/Users/ANIK/Desktop/Gemejime/Notification%20Dispatch%20Daemon/.ai/architecture.md)
-[![OpenAPI Spec](https://img.shields.io/badge/OpenAPI-3.1-blueviolet.svg)](file:///c:/Users/ANIK/Desktop/Gemejime/Notification%20Dispatch%20Daemon/api/openapi/openapi.yaml)
-[![Targeted Routing](https://img.shields.io/badge/routing-targeted%20pod%20channels-brightgreen.svg)](file:///c:/Users/ANIK/Desktop/Gemejime/Notification%20Dispatch%20Daemon/internal/infrastructure/transport/hub/targeted_router.go)
-[![Memory Ceiling](https://img.shields.io/badge/GOMEMLIMIT-1800MiB-red.svg)](file:///c:/Users/ANIK/Desktop/Gemejime/Notification%20Dispatch%20Daemon/.ai/code-standards.md)
+[![Architecture Pattern](https://img.shields.io/badge/pattern-Hexagonal%20%2F%20Clean-orange.svg)](.ai/architecture.md)
+[![OpenAPI Spec](https://img.shields.io/badge/OpenAPI-3.1-blueviolet.svg)](api/openapi/openapi.yaml)
+[![Targeted Routing](https://img.shields.io/badge/routing-targeted%20pod%20channels-brightgreen.svg)](internal/infrastructure/transport/hub/targeted_router.go)
+[![Memory Ceiling](https://img.shields.io/badge/GOMEMLIMIT-1800MiB-red.svg)](.ai/code-standards.md)
 
 ---
 
@@ -18,10 +18,10 @@ The daemon ingests Change Data Capture (CDC) events emitted by upstream domain s
 2. **Asynchronous Webhook Enqueueing**: Packaging delivery envelopes with HMAC-SHA256 signing metadata and enqueuing them onto Redis Streams / RabbitMQ delivery queues consumed by the egress pool (`rag-webhook-delivery-worker`).
 
 ### Primary Architectural Invariants
-- **Zero Hot-Path SQL Reads (ADR-004)**: Cold-path rule hydration loads from PostgreSQL 16+ via PgBouncer on startup; the hot path evaluates exclusively against local in-memory caches invalidated asynchronously via Redis Pub/Sub within $\le 100\text{ms}$.
-- **Targeted Pod Routing (ADR-003)**: Eliminates $O(N \times M)$ global Pub/Sub broadcast storms by maintaining an active user/node session directory in Redis 7.2 Cluster and routing events specifically to `pod.{node_id}.events`.
+- **Zero Hot-Path SQL Reads (ADR-004)**: Routing rules evaluate against a pod-local in-memory cache without synchronous database queries on the hot path. Note that `main` currently initializes a no-op PostgreSQL querier (`postgres.NewNoopQuerier`) and in-process Redis pub/sub (`redis.NewInMemoryPubSubClient`), so configuring `POSTGRES_DSN` and Redis cluster addresses does not populate the cache from database queries or broadcast invalidations across external pods until production DB queriers and cluster pub/sub clients are wired in.
+- **Targeted Pod Routing (ADR-003)**: Eliminates $O(N \times M)$ global Pub/Sub broadcast storms by maintaining an active user/node session directory in Redis 7.2 Cluster and routing events specifically to `pod.node_id.events`.
 - **SSRF & Egress Isolation (ADR-001)**: The daemon executes **zero** external HTTP POST requests, offloading all webhook delivery, backoff retry jitter, and egress firewalling to horizontal Python workers in the egress DMZ.
-- **Bounded Memory & Drop Policies**: Per-socket 256-event ring buffers isolate client writes. Intermediate progress frames are dropped on buffer saturation, terminal states are strictly preserved, and stalled consumers ($> 5\text{s}$) are cleanly evicted.
+- **Bounded Memory & Drop Policies**: Per-socket 256-event ring buffers isolate client writes. Intermediate progress frames are dropped on buffer saturation. Terminal frames preempt older non-terminal frames; however, if all 256 buffered frames are terminal, the connection is evicted and the client must recover via `Last-Event-ID` replay (fetching up to 100 events per reconnect). Stalled consumers exceeding the write deadline (default 5s, configurable via `SSE_SLOW_CONSUMER_TIMEOUT`) are cleanly evicted.
 - **Staggered Graceful Draining (ADR-005)**: Upon `SIGTERM`, `/ready` flips to `503`, new connections are rejected, and connected SSE sockets receive randomized reconnect retry jitter [30s, 60s] over a 75-second Kubernetes shutdown budget (`terminationGracePeriodSeconds: 75`).
 
 ---
@@ -180,7 +180,7 @@ Aligned with Clean / Hexagonal Architecture principles, the daemon strictly deco
 ### ADR-004: Pod-Local In-Memory Subscription Rule Caching
 - **Status**: Accepted & Implemented
 - **Context**: Querying PostgreSQL / PgBouncer for tenant notification preferences on every CDC event introduces database connection pool exhaustion and unpredictable query latency on the hot path.
-- **Decision**: Cache all tenant subscription rules and notification suppressions in a thread-safe, pod-local in-memory cache. Hydrate cold cache on pod boot; invalidate asynchronously across pods via `tenant.config.updated` Pub/Sub messages within $\le 100\text{ms}$.
+- **Decision**: Cache all tenant subscription rules and notification suppressions in a thread-safe, pod-local in-memory cache. In the production architecture design, cold caches hydrate from PostgreSQL on startup and receive invalidations via `tenant.config.updated`. In the current implementation, `main.go` uses `postgres.NewNoopQuerier` and `redis.NewInMemoryPubSubClient`; external database queries and multi-pod pub/sub invalidation will activate when external clients are wired.
 - **Consequences**: Zero SQL queries on the hot ingestion path; deterministic $P99 \le 50\text{ms}$ dispatch latency.
 
 ### ADR-005: Staggered Graceful Connection Draining on SIGTERM
@@ -229,6 +229,8 @@ sequenceDiagram
 
 ### 5.2 Reconnection & `Last-Event-ID` Replay
 
+The client reconnects supplying a `Last-Event-ID` header or query parameter. The connection is registered with the local hub prior to replay to ensure any concurrent live events emitted during the replay query are buffered in the client's ring buffer rather than dropped. Catch-up replay fetches a bounded batch of up to `ReplayMaxEvents` (default 100) before real-time streaming begins:
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -260,7 +262,7 @@ sequenceDiagram
 ## 6. Runtime, Concurrency & Memory Model
 
 ### Go 1.23+ Runtime Bounds
-- **`GOMEMLIMIT=1800MiB`**: Hard GC memory target enforced inside 2GiB container limits.
+- **`GOMEMLIMIT=1800MiB`**: Soft GC memory target enforced inside 2Gi container limits. It reduces, but does not completely eliminate, OOM risk under heavy allocation spikes; operators should provision and monitor container memory for peak workloads.
 - **`GOGC=80`**: Aggressive GC pacing to reclaim short-lived allocation buffers before reaching memory limits.
 - **Per-Socket Memory Footprint**: ~14–16KiB per idle socket (~320MiB for 20,000 idle connections).
 - **Socket File Descriptors**: `ulimit -n 65535` configured in container deployment.
@@ -276,8 +278,8 @@ Client Saturated?
                      ├── false ──► DROP intermediate frame (increment notification_dropped_frames_total)
                      │
                      └── true  ──► RETAIN terminal state transition (evict oldest non-terminal frame)
-                                   If all 256 frames are terminal, force evict socket & rely on Last-Event-ID recovery.
-                                   If client write stalled > 5s, terminate connection cleanly.
+                                   If all 256 frames are terminal, evict connection (client recovers up to 100 events via Last-Event-ID).
+                                   If client write stalled > deadline (default 5s, configurable via SSE_SLOW_CONSUMER_TIMEOUT), terminate connection cleanly.
 ```
 
 ---
@@ -300,6 +302,6 @@ Client Saturated?
 
 The architecture enforces strict automated verification gates across the development lifecycle:
 1. **Contract Synchronization**: Live OpenAPI 3.1 specifications (`api/openapi/openapi.yaml`, `/docs`, `/redoc`, `/api/docs`, `/openapi.json`) and [`.ai/doc-api.md`](file:///c:/Users/ANIK/Desktop/Gemejime/Notification%20Dispatch%20Daemon/.ai/doc-api.md) are strictly validated for zero-drift.
-2. **Environment & Helm Synchronization**: The Python script [`scripts/sync_env_to_deployments.py`](file:///c:/Users/ANIK/Desktop/Gemejime/Notification%20Dispatch%20Daemon/scripts/sync_env_to_deployments.py) enforces 1:1 alignment between `.env.prod` and Helm values.
+2. **Environment & Helm Synchronization**: The pre-deployment validation check (`python scripts/sync_env_to_deployments.py --check-only`) verifies that non-sensitive configuration keys in Helm values match `.env.prod`, falling back to `.env.example` in CI environments where `.env.prod` is uncommitted.
 3. **Performance & Soak Verification**: Continuous soak testing (`test/performance/high_density_soak_test.go`) validates memory bounds under 20,000 concurrent sockets, and chaos draining tests (`test/performance/chaos_drain_test.go`) verify jitter compliance on SIGTERM.
 
