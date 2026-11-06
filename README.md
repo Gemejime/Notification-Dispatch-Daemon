@@ -2,7 +2,7 @@
 
 [![Go Version](https://img.shields.io/badge/go-1.23%2B-blue.svg)](https://golang.org)
 [![License](https://img.shields.io/badge/license-Apache%202.0-brightgreen.svg)](file:///c:/Users/ANIK/Desktop/Gemejime/Notification%20Dispatch%20Daemon/LICENSE)
-[![Architecture](https://img.shields.io/badge/architecture-hexagonal-orange.svg)](file:///c:/Users/ANIK/Desktop/Gemejime/Notification%20Dispatch%20Daemon/.ai/architecture.md)
+[![Architecture](https://img.shields.io/badge/architecture-hexagonal-orange.svg)](file:///c:/Users/ANIK/Desktop/Gemejime/Notification%20Dispatch%20Daemon/ARCHITECTURE.md)
 [![OpenAPI](https://img.shields.io/badge/OpenAPI-3.1-blueviolet.svg)](file:///c:/Users/ANIK/Desktop/Gemejime/Notification%20Dispatch%20Daemon/api/openapi/openapi.yaml)
 [![SLO Availability](https://img.shields.io/badge/SLO%20Availability-99.99%25-success.svg)](file:///c:/Users/ANIK/Desktop/Gemejime/Notification%20Dispatch%20Daemon/.ai/project-overview.md)
 [![Concurrent Sockets](https://img.shields.io/badge/capacity-%E2%89%A5100k%20sockets-purple.svg)](file:///c:/Users/ANIK/Desktop/Gemejime/Notification%20Dispatch%20Daemon/.ai/project-overview.md)
@@ -131,6 +131,7 @@ Full OpenAPI 3.1 specification is available in [`api/openapi/openapi.yaml`](file
 
 ```
 .
+├── ARCHITECTURE.md                       # Comprehensive 5-Layer backend architecture & ADRs
 ├── .ai/                                  # Authoritative system specs, architecture, & doc-api
 │   ├── architecture.md                   # 5-Layer Backend Architecture & ADR-001..ADR-005
 │   ├── doc-api.md                        # Complete API contracts, schemas, Redis keys, & Prometheus metrics
@@ -308,3 +309,4 @@ kubectl apply -f deployments/argo/application.yaml
 ## License
 
 This project is licensed under the Apache 2.0 License. See the [`LICENSE`](file:///c:/Users/ANIK/Desktop/Gemejime/Notification%20Dispatch%20Daemon/LICENSE) file for details.
+
