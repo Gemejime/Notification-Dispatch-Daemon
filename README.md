@@ -54,7 +54,7 @@ flowchart TD
     end
 
     subgraph StorageBackplane ["State & Persistence Backplane"]
-        RedisCluster["Dedicated Redis 7.2 Cluster\n- Presence Registry\n- pod.{node_id}.events\n- Last-Event-ID Replay"]
+        RedisCluster["Dedicated Redis 7.2 Cluster\n- Presence Registry\n- pod.node_id.events\n- Last-Event-ID Replay"]
         Postgres["PostgreSQL 16+ (PgBouncer)\nCold Hydration & Configs"]
     end
 
@@ -73,15 +73,15 @@ flowchart TD
 
     Router -->|Local Session| Hub
     Router -->|Remote Node| RedisCluster
-    RedisCluster -->|pod.{node_id}.events| Hub
+    RedisCluster -->|"pod.node_id.events"| Hub
 
     Hub --> Ring
     Ring --> SSE
-    SSE -->|text/event-stream| Clients
+    SSE -->|"text/event-stream"| Clients
 
     Router -->|Enqueue WebhookTask| Worker
     Postgres -.->|Cold Start Warmup| Cache
-    RedisCluster -.->|tenant.config.updated <=100ms| Cache
+    RedisCluster -.->|"tenant.config.updated <= 100ms"| Cache
 ```
 
 ---
