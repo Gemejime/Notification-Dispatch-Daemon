@@ -523,7 +523,8 @@ The daemon automatically reads `.env` on startup via its zero-dependency dotenv 
 | `HTTP_PORT` | `8080` | Yes | HTTP/2 SSE & REST listening port |
 | `PORT` | `8080` | No | Alternate listening port fallback (compatible with Cloud Run / PaaS container platforms) |
 | `POSTGRES_DSN` | — | Yes (Secret) | PgBouncer PostgreSQL 16+ connection string (strictly cold-path only; redacted in logs) |
-| `REDIS_ADDRS` | — | Yes | Comma-separated Redis 7.2 Cluster nodes |
+| `REDIS_CLUSTER_ADDRS` | — | No | Comma-separated in-cluster Redis 7.2 Cluster headless node endpoints (takes precedence over `REDIS_ADDRS`) |
+| `REDIS_ADDRS` | — | Yes | Comma-separated Redis 7.2 Cluster nodes (fallback seed addresses) |
 | `REDIS_PASSWORD` | — | No (Secret) | Redis authentication secret (strictly redacted in logs) |
 | `KAFKA_BROKERS` | — | Yes | Comma-separated Apache Kafka 3.7+ bootstrap brokers |
 | `KAFKA_CONSUMER_GROUP` | `rag-notification-dispatch-daemon` | Yes | Consumer group ID for CDC outbox topics |

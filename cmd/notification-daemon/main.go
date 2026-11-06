@@ -113,7 +113,7 @@ func LoadConfig() (Config, error) {
 		NodeID:               envOrDefault("NODE_ID", hostname),
 		HTTPPort:             envOrDefault("HTTP_PORT", envOrDefault("PORT", "8080")),
 		PostgresDSN:          observability.NewSecretString(os.Getenv("POSTGRES_DSN")),
-		RedisAddrs:           splitCSV(envOrDefault("REDIS_ADDRS", "localhost:6379")),
+		RedisAddrs:           splitCSV(envOrDefault("REDIS_CLUSTER_ADDRS", envOrDefault("REDIS_ADDRS", "localhost:6379"))),
 		RedisPassword:        observability.NewSecretString(os.Getenv("REDIS_PASSWORD")),
 		KafkaBrokers:         splitCSV(envOrDefault("KAFKA_BROKERS", "localhost:9092")),
 		KafkaConsumerGroup:   envOrDefault("KAFKA_CONSUMER_GROUP", "rag-notification-dispatch-daemon"),
