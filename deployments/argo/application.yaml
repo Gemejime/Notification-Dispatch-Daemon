@@ -1,0 +1,36 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: rag-notification-dispatch-daemon
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  labels:
+    app.kubernetes.io/name: rag-notification-dispatch-daemon
+    app.kubernetes.io/part-of: rag-system
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/gemejime/rag-notification-dispatch-daemon.git
+    targetRevision: HEAD
+    path: deployments/helm/rag-notification-dispatch-daemon
+    helm:
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: rag-system
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+

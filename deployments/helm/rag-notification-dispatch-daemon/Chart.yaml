@@ -1,0 +1,17 @@
+apiVersion: v2
+name: rag-notification-dispatch-daemon
+description: Production-grade Helm chart for high-density RAG Notification Dispatch Daemon
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - rag
+  - notification
+  - sse
+  - event-streaming
+  - distributed-systems
+home: https://github.com/gemejime/rag-notification-dispatch-daemon
+maintainers:
+  - name: Distributed Systems Engineering Team
+    email: systems-eng@rag.internal
+

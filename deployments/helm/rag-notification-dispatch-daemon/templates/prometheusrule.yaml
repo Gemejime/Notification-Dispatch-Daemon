@@ -1,0 +1,55 @@
+{{- if .Values.prometheusRule.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "rag-notification-dispatch-daemon.fullname" . }}-alerts
+  labels:
+    {{- include "rag-notification-dispatch-daemon.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: rag-notification-dispatch-daemon.rules
+      rules:
+        - alert: HighClientWriteLatency
+          expr: histogram_quantile(0.99, sum(rate(notification_client_write_latency_seconds_bucket[3m])) by (le)) > 0.05
+          for: {{ .Values.prometheusRule.alerts.highClientWriteLatency.duration }}
+          labels:
+            severity: {{ .Values.prometheusRule.alerts.highClientWriteLatency.severity }}
+            service: {{ include "rag-notification-dispatch-daemon.name" . }}
+          annotations:
+            summary: "P99 SSE write latency exceeds 50ms"
+            description: "P99 SSE client write latency on {{ $labels.instance }} is > 50ms over {{ .Values.prometheusRule.alerts.highClientWriteLatency.duration }}. Possible Slow-Loris congestion or saturated network buffers."
+
+        - alert: CDCIngestionLag
+          expr: notification_cdc_consumer_lag > {{ .Values.prometheusRule.alerts.cdcIngestionLag.thresholdRecords }}
+          for: {{ .Values.prometheusRule.alerts.cdcIngestionLag.duration }}
+          labels:
+            severity: {{ .Values.prometheusRule.alerts.cdcIngestionLag.severity }}
+            service: {{ include "rag-notification-dispatch-daemon.name" . }}
+          annotations:
+            summary: "CDC milestone outbox consumer lag elevated"
+            description: "CDC milestone consumer lag exceeds {{ .Values.prometheusRule.alerts.cdcIngestionLag.thresholdRecords }} messages for {{ .Values.prometheusRule.alerts.cdcIngestionLag.duration }}."
+
+        - alert: ElevatedDropFrameRate
+          expr: (sum(rate(notification_dropped_frames_total[5m])) / (sum(rate(notification_events_emitted_total[5m])) + 0.000001)) > 0.01
+          for: {{ .Values.prometheusRule.alerts.elevatedDropFrameRate.duration }}
+          labels:
+            severity: {{ .Values.prometheusRule.alerts.elevatedDropFrameRate.severity }}
+            service: {{ include "rag-notification-dispatch-daemon.name" . }}
+          annotations:
+            summary: "SSE dropped frame rate exceeds 1% of emissions"
+            description: "Ring buffer saturated drops account for > 1% of total emitted frames over {{ .Values.prometheusRule.alerts.elevatedDropFrameRate.duration }}."
+
+        - alert: NearOOMMemorySaturation
+          expr: go_memstats_alloc_bytes > {{ .Values.prometheusRule.alerts.nearOOMMemorySaturation.thresholdBytes }}
+          for: {{ .Values.prometheusRule.alerts.nearOOMMemorySaturation.duration }}
+          labels:
+            severity: {{ .Values.prometheusRule.alerts.nearOOMMemorySaturation.severity }}
+            service: {{ include "rag-notification-dispatch-daemon.name" . }}
+          annotations:
+            summary: "Daemon heap allocation near OOM ceiling (> 1.8 GiB)"
+            description: "Pod allocated heap memory (go_memstats_alloc_bytes) exceeds {{ .Values.prometheusRule.alerts.nearOOMMemorySaturation.thresholdBytes }} bytes for > {{ .Values.prometheusRule.alerts.nearOOMMemorySaturation.duration }}. Risk of cgroup 2GiB OOMKill."
+{{- end }}
+

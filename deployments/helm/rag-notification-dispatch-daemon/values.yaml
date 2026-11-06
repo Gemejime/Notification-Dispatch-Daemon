@@ -1,0 +1,214 @@
+# Default values for rag-notification-dispatch-daemon.
+# Architecture: 5-Layer Production-Grade Backend Architecture
+# Spec-Aligned: ADR-001 through ADR-005 & GEMINI.MD
+
+replicaCount: 3
+
+image:
+  repository: gcr.io/rag-system/rag-notification-dispatch-daemon
+  pullPolicy: IfNotPresent
+  tag: "1.0.0"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+podAnnotations: {}
+secretChecksum: ""
+
+# Pod termination grace period (ADR-005 requires 75s for 30-60s staggered draining)
+terminationGracePeriodSeconds: 75
+
+# Zero-downtime rolling update strategy
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxSurge: 25%
+    maxUnavailable: 0
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podSecurityContext:
+  fsGroup: 65532
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+service:
+  type: ClusterIP
+  port: 8080
+  targetPort: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  hosts:
+    - host: notifications.rag.internal
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 2GiB
+  requests:
+    cpu: 500m
+    memory: 1GiB
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 65
+  # Custom metrics adapter prerequisite: requires a Prometheus Adapter / custom-metrics.k8s.io API installed in the cluster.
+  # Gated behind customMetrics.enabled, defaulting to false to preserve CPU autoscaling by default.
+  customMetrics:
+    enabled: false
+    # Connection density ceiling: <= 15,000 active SSE streams per pod
+    targetActiveConnections: 15000
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+# Health and readiness probes pointing to daemon operational endpoints
+probes:
+  liveness:
+    httpGet:
+      path: /healthz
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    httpGet:
+      path: /ready
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 1
+
+# Node affinity targeting memory-optimized, compute-light pool
+nodeAffinity:
+  preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      preference:
+        matchExpressions:
+          - key: workload
+            operator: In
+            values:
+              - memory-optimized-io
+
+# Pod anti-affinity across failure zones and host nodes
+podAntiAffinity:
+  topologyZoneKey: "topology.kubernetes.io/zone"
+  hostnameKey: "kubernetes.io/hostname"
+
+tolerations: []
+
+# 12-Factor runtime environment configuration (synced from .env.prod)
+# Note: NODE_ID is derived dynamically from metadata.name in the Deployment and omitted from static env.
+env:
+  secretName: "rag-notification-dispatch-daemon-secrets"
+  DOTENV_OVERRIDE: "false"
+  DRAIN_JITTER_MAX: "60s"
+  DRAIN_JITTER_MIN: "30s"
+  ENVIRONMENT: "production"
+  GOGC: "80"
+  GOMEMLIMIT: "1800MiB"
+  HTTP_PORT: "8080"
+  JWT_AUDIENCE: "rag-notification-dispatch-daemon"
+  JWT_ISSUER: "rag-auth-service"
+  KAFKA_BROKERS: "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092"
+  KAFKA_CDC_TOPICS: "rag.cdc.kb-catalog,rag.cdc.ingestion,rag.cdc.chunk-lifecycle"
+  KAFKA_CONSUMER_GROUP: "rag-notification-dispatch-daemon"
+  LOG_LEVEL: "INFO"
+  PORT: "8080"
+  REDIS_ADDRS: "rag-notification-dispatch-daemon-redis-0.rag-notification-dispatch-daemon-redis-headless.rag-system.svc.cluster.local:6379,rag-notification-dispatch-daemon-redis-1.rag-notification-dispatch-daemon-redis-headless.rag-system.svc.cluster.local:6379,rag-notification-dispatch-daemon-redis-2.rag-notification-dispatch-daemon-redis-headless.rag-system.svc.cluster.local:6379"
+  REDIS_CLUSTER_ADDRS: "rag-notification-dispatch-daemon-redis-0.rag-notification-dispatch-daemon-redis-headless.rag-system.svc.cluster.local:6379,rag-notification-dispatch-daemon-redis-1.rag-notification-dispatch-daemon-redis-headless.rag-system.svc.cluster.local:6379,rag-notification-dispatch-daemon-redis-2.rag-notification-dispatch-daemon-redis-headless.rag-system.svc.cluster.local:6379"
+  SSE_HEARTBEAT_INTERVAL: "15s"
+  SSE_RING_BUFFER_SIZE: "256"
+  SSE_SLOW_CONSUMER_TIMEOUT: "5s"
+  WEBHOOK_QUEUE_STREAM: "rag:webhook:tasks"
+config:
+  logLevel: "INFO"
+  logFormat: "json"
+  kafkaBrokers: "kafka-cluster-kafka-bootstrap.kafka.svc.cluster.local:9092"
+  kafkaTopicOutbox: "rag.cdc.milestone.events"
+  kafkaConsumerGroup: "rag-notification-dispatch-daemon-cg"
+  redisHost: "redis-cluster.redis.svc.cluster.local:6379"
+  postgresHost: "pgbouncer.postgres.svc.cluster.local:6432"
+  postgresDb: "rag_notifications"
+  postgresUser: "rag_daemon_app"
+  postgresMaxConns: "25"
+  sseRingBufferSize: "256"
+  sseHeartbeatSeconds: "15"
+  slowConsumerTimeoutSeconds: "5"
+  drainJitterMinSeconds: "30"
+  drainJitterMaxSeconds: "60"
+  replayBufferMaxlen: "1000"
+  rateLimitTokensPerSec: "10"
+  rateLimitBurst: "20"
+  gomemlimit: "1800MiB"
+  gogc: "80"
+
+# External Secret Store or Vault references
+secret:
+  create: true
+  redisPasswordKey: "REDIS_PASSWORD"
+  postgresPasswordKey: "POSTGRES_PASSWORD"
+  channelAuthSecretKey: "CHANNEL_AUTH_SECRET"
+  # Set to true when referencing external HashiCorp Vault / AWS Secrets Manager secret
+  externalSecret:
+    enabled: false
+    name: "rag-notification-secrets"
+
+# Prometheus Operator metrics & alerts
+serviceMonitor:
+  enabled: true
+  interval: 15s
+  scrapeTimeout: 10s
+  path: /metrics
+  labels:
+    release: prometheus
+
+prometheusRule:
+  enabled: true
+  labels:
+    role: alert-rules
+    release: prometheus
+  alerts:
+    highClientWriteLatency:
+      severity: warning
+      thresholdMs: 50
+      duration: 3m
+    cdcIngestionLag:
+      severity: critical
+      thresholdRecords: 5000
+      duration: 2m
+    elevatedDropFrameRate:
+      severity: critical
+      thresholdPercent: 1.0
+      duration: 5m
+    nearOOMMemorySaturation:
+      severity: critical
+      thresholdBytes: 1932735283 # 1.8 GiB
+      duration: 1m
+

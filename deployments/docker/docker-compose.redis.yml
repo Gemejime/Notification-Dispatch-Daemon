@@ -1,0 +1,31 @@
+services:
+  redis:
+    image: bitnami/redis:7.2-debian-12
+    container_name: rag-notification-dispatch-daemon-redis-local
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    environment:
+      - ALLOW_EMPTY_PASSWORD=no
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-dev_redis_secret}
+      - REDIS_AOF_ENABLED=yes
+      - REDIS_MAXMEMORY_POLICY=noeviction
+      - REDIS_PORT_NUMBER=6379
+    volumes:
+      - redis_data:/bitnami/redis/data
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$${REDIS_PASSWORD:-dev_redis_secret}\" redis-cli -p 6379 ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    networks:
+      - rag_local_net
+
+volumes:
+  redis_data:
+    driver: local
+
+networks:
+  rag_local_net:
+    driver: bridge

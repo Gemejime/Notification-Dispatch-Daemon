@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "rag-notification-dispatch-daemon.fullname" . }}-config
+  labels:
+    {{- include "rag-notification-dispatch-daemon.labels" . | nindent 4 }}
+data:
+  PORT: {{ default "8080" (get .Values.env "PORT") | quote }}
+  GRPC_PORT: {{ default "50051" (get .Values.env "GRPC_PORT") | quote }}
+  {{- range $key, $val := .Values.env }}
+  {{- if and (ne $key "secretName") (ne $key "PORT") (ne $key "GRPC_PORT") (ne $val nil) }}
+  {{ $key }}: {{ $val | quote }}
+  {{- end }}
+  {{- end }}
+
