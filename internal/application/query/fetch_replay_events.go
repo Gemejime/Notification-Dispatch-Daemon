@@ -213,6 +213,7 @@ func (h *FetchReplayEventsHandler) Handle(
 			seen[ev.EventID] = struct{}{}
 		}
 		jCursor := q.LastEventID
+		var journalMatched int
 		for {
 			journalEvents, jErr := h.journalRepo.FetchReplayAfter(ctx, q.TenantID, jCursor, q.Limit)
 			if jErr != nil {
@@ -235,12 +236,13 @@ func (h *FetchReplayEventsHandler) Handle(
 				if q.UserID == "" || ev.UserID == "" || ev.UserID == q.UserID {
 					seen[ev.EventID] = struct{}{}
 					events = append(events, ev)
+					journalMatched++
 				}
 			}
 			if len(journalEvents) < q.Limit {
 				break
 			}
-			if len(events) >= q.Limit {
+			if journalMatched >= q.Limit {
 				break
 			}
 		}

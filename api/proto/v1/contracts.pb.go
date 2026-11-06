@@ -407,13 +407,15 @@ func (t *WebhookDeliveryTask) UnmarshalWire(data []byte) error {
 	return nil
 }
 
+// appendProtoVarintField encodes a varint field with the given protobuf field number and value.
 func appendProtoVarintField(buf []byte, fieldNum uint64, val uint64) []byte {
-	tag := (fieldNum << 3) | 0
+	tag := fieldNum << 3
 	buf = binary.AppendUvarint(buf, tag)
 	buf = binary.AppendUvarint(buf, val)
 	return buf
 }
 
+// appendProtoString encodes a length-delimited string field with the given protobuf field number.
 func appendProtoString(buf []byte, fieldNum uint64, s string) []byte {
 	if s == "" {
 		return buf
@@ -425,6 +427,7 @@ func appendProtoString(buf []byte, fieldNum uint64, s string) []byte {
 	return buf
 }
 
+// appendProtoBytes encodes a length-delimited byte slice field with the given protobuf field number.
 func appendProtoBytes(buf []byte, fieldNum uint64, b []byte) []byte {
 	if len(b) == 0 {
 		return buf

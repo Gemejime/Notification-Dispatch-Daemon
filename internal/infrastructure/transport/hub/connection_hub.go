@@ -353,10 +353,14 @@ func (h *ConnectionHub) DrainWithJitter(ctx context.Context, minJitter, maxJitte
 			case <-ctx.Done():
 			}
 			s.RingBuffer.TriggerDrain(delay)
+			drainWaitLimit := h.slowConsumerLimit
+			if drainWaitLimit <= 0 {
+				drainWaitLimit = DefaultSlowConsumerTimeout
+			}
 			select {
 			case <-s.RingBuffer.DrainDone():
 			case <-ctx.Done():
-			case <-time.After(500 * time.Millisecond):
+			case <-time.After(drainWaitLimit):
 			}
 			h.Deregister(s.Conn.ConnectionID)
 		}(sess, jitterDelay)

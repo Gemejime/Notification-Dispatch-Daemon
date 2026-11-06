@@ -83,13 +83,13 @@ func TestSIGTERMGracefulDrainingReadinessAndJitter(t *testing.T) {
 	if err != nil || respHealth.StatusCode != http.StatusOK {
 		t.Fatalf("expected /healthz 200, got %v (status %d)", err, respHealth.StatusCode)
 	}
-	respHealth.Body.Close()
+	_ = respHealth.Body.Close()
 
 	respReadyBefore, err := http.Get(server.URL + "/ready")
 	if err != nil || respReadyBefore.StatusCode != http.StatusOK {
 		t.Fatalf("expected /ready 200 before draining, got %v (status %d)", err, respReadyBefore.StatusCode)
 	}
-	respReadyBefore.Body.Close()
+	_ = respReadyBefore.Body.Close()
 
 	// Step 2: Connect 50 active SSE streams to the server.
 	numStreams := 50
@@ -121,7 +121,7 @@ func TestSIGTERMGracefulDrainingReadinessAndJitter(t *testing.T) {
 				results[idx].err = rErr
 				return
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
 			if resp.StatusCode != http.StatusOK {
 				results[idx].err = fmt.Errorf("unexpected status %d", resp.StatusCode)
@@ -172,7 +172,7 @@ func TestSIGTERMGracefulDrainingReadinessAndJitter(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to query /ready: %v", err)
 	}
-	defer respReadyAfter.Body.Close()
+	defer func() { _ = respReadyAfter.Body.Close() }()
 
 	if respReadyAfter.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("expected /ready to immediately return 503 on SIGTERM, got %d", respReadyAfter.StatusCode)
@@ -191,7 +191,7 @@ func TestSIGTERMGracefulDrainingReadinessAndJitter(t *testing.T) {
 	if err != nil || respHealthAfter.StatusCode != http.StatusOK {
 		t.Fatalf("expected /healthz 200 during draining, got status %d", respHealthAfter.StatusCode)
 	}
-	respHealthAfter.Body.Close()
+	_ = respHealthAfter.Body.Close()
 
 	// Wait for draining and all streams to complete.
 	select {
@@ -331,11 +331,12 @@ func TestGracefulDrainReconnectionThrottlingAndRedisProtection(t *testing.T) {
 			if err != nil {
 				return
 			}
-			defer resp.Body.Close()
+			defer func() { _ = resp.Body.Close() }()
 
-			if resp.StatusCode == http.StatusOK {
+			switch resp.StatusCode {
+			case http.StatusOK:
 				successCount.Add(1)
-			} else if resp.StatusCode == http.StatusTooManyRequests {
+			case http.StatusTooManyRequests:
 				rateLimitedCount.Add(1)
 				if resp.Header.Get("Retry-After") == "5" {
 					retryAfterHeaderSeen.Store(true)
